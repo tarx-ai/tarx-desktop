@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TARX — Offline</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0A0A0D;
+      color: #fff;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      gap: 16px;
+      -webkit-app-region: drag;
+      user-select: none;
+    }
+    .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #F04438;
+      display: inline-block;
+      margin-right: 6px;
+    }
+    h1 {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: #fff;
+    }
+    p {
+      font-size: 14px;
+      color: #667085;
+      text-align: center;
+      max-width: 340px;
+      line-height: 1.5;
+    }
+    button {
+      -webkit-app-region: no-drag;
+      margin-top: 8px;
+      padding: 10px 24px;
+      border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: #111318;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:hover { background: #1A1D24; }
+  </style>
+</head>
+<body>
+  <h1><span class="dot"></span>Offline</h1>
+  <p>TARX couldn't reach tarx.com or your local Bridge. Check your connection and try again.</p>
+  <button onclick="location.reload()">Retry</button>
+</body>
+</html>
