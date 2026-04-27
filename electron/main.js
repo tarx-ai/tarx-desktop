@@ -10,7 +10,8 @@ const isDev = process.env.NODE_ENV === 'development';
 
 // URLs — primary is tarx.com, fallback is local Bridge
 const PRIMARY_URL = 'https://tarx.com';
-const FALLBACK_URL = 'http://localhost:11440';
+const FALLBACK_PORTS = [11440, 11441];
+const FALLBACK_URL = 'http://localhost:11440'; // Updated dynamically
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 
 let mainWindow = null;
@@ -38,7 +39,10 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    titleBarStyle: 'hiddenInset',
+    titleBarStyle: 'hidden',
+    trafficLightPosition: { x: 16, y: 14 },
+    roundedCorners: true,
+    vibrancy: undefined,
     backgroundColor: '#0A0A0D',
     show: false,
     webPreferences: {
@@ -50,6 +54,61 @@ function createWindow() {
     },
   });
 
+  // macOS Sequoia+ corner radius (10px system default)
+  if (process.platform === 'darwin' && mainWindow.setWindowButtonVisibility) {
+    mainWindow.setWindowButtonVisibility(true);
+  }
+
+  // Use a separate BrowserView offset 44px from the top.
+  // The top 44px is native — traffic lights live there, nothing else.
+  // Web content cannot bleed into it because it physically starts at y=44.
+  const { BrowserView } = require('electron');
+  const view = new BrowserView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+    },
+  });
+  mainWindow.setBrowserView(view);
+
+  const TITLE_BAR_HEIGHT = 44;
+
+  function resizeView() {
+    const [w, h] = mainWindow.getContentSize();
+    view.setBounds({ x: 0, y: TITLE_BAR_HEIGHT, width: w, height: h - TITLE_BAR_HEIGHT });
+  }
+  resizeView();
+  mainWindow.on('resize', resizeView);
+
+  // Title bar: solid #0A0A0D, traffic lights left, "Ask TARX" CTA right.
+  // CTA opens standalone floating composer window.
+  mainWindow.webContents.loadURL(`data:text/html,
+    <html style="margin:0;padding:0;background:%230A0A0D;-webkit-app-region:drag;height:${TITLE_BAR_HEIGHT}px;overflow:hidden;">
+    <body style="margin:0;padding:0;display:flex;align-items:center;justify-content:flex-end;height:${TITLE_BAR_HEIGHT}px;padding-right:16px;">
+      <button id="ask-tarx-btn"
+        style="-webkit-app-region:no-drag;background:%2392B6DE;color:%230A0A0D;border:none;border-radius:10px;padding:6px 16px;font-size:12px;font-weight:600;font-family:system-ui,sans-serif;cursor:pointer;letter-spacing:0.02em;"
+      >Ask TARX</button>
+      <script>
+        document.getElementById('ask-tarx-btn').addEventListener('click', () => {
+          window.electronAPI?.openComposer?.() || fetch('http://127.0.0.1:11440/health');
+        });
+      </script>
+    </body></html>
+  `);
+
+  // IPC: "Ask TARX" opens floating composer
+  ipcMain.on('open-composer', () => openComposerWindow());
+
+  // Also listen for the preload bridge
+  ipcMain.handle('open-composer', () => openComposerWindow());
+
+  // Replace the direct URL loading — the BrowserView loads the content now
+  // Remove the old loadBestUrl call from mainWindow, use view instead
+  mainWindow._tarxView = view;
+
   loadBestUrl();
 
   mainWindow.once('ready-to-show', () => {
@@ -57,8 +116,8 @@ function createWindow() {
     if (!isDev) checkForUpdates();
   });
 
-  // Handle navigation — open external links in browser, keep internal in-app
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  // Handle navigation on the BrowserView (not mainWindow)
+  view.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://tarx.com') || url.startsWith('http://localhost')) {
       return { action: 'allow' };
     }
@@ -66,8 +125,8 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDesc, validatedUrl) => {
-    if (errorCode === -3) return; // ERR_ABORTED — user navigation, ignore
+  view.webContents.on('did-fail-load', (_event, errorCode, errorDesc, validatedUrl) => {
+    if (errorCode === -3) return;
     console.error(`[tarx] Load failed: ${errorCode} ${errorDesc} at ${validatedUrl}`);
     handleLoadFailure();
   });
@@ -84,7 +143,7 @@ async function loadBestUrl() {
     currentUrl = PRIMARY_URL;
     isOnline = true;
     trayManager?.setStatus('online');
-    mainWindow?.loadURL(PRIMARY_URL);
+    mainWindow?._tarxView?.webContents.loadURL(PRIMARY_URL);
     return;
   }
 
@@ -93,14 +152,14 @@ async function loadBestUrl() {
     currentUrl = FALLBACK_URL;
     isOnline = false;
     trayManager?.setStatus('local');
-    mainWindow?.loadURL(FALLBACK_URL);
+    mainWindow?._tarxView?.webContents.loadURL(FALLBACK_URL);
     return;
   }
 
   // Both unreachable — show offline page
   isOnline = false;
   trayManager?.setStatus('offline');
-  mainWindow?.loadFile(path.join(__dirname, 'offline.html'));
+  mainWindow?._tarxView?.webContents.loadFile(path.join(__dirname, 'offline.html'));
 }
 
 function handleLoadFailure() {
@@ -109,10 +168,10 @@ function handleLoadFailure() {
       if (ok) {
         currentUrl = FALLBACK_URL;
         trayManager?.setStatus('local');
-        mainWindow?.loadURL(FALLBACK_URL);
+        mainWindow?._tarxView?.webContents.loadURL(FALLBACK_URL);
       } else {
         trayManager?.setStatus('offline');
-        mainWindow?.loadFile(path.join(__dirname, 'offline.html'));
+        mainWindow?._tarxView?.webContents.loadFile(path.join(__dirname, 'offline.html'));
       }
     });
   }
@@ -130,6 +189,91 @@ function probe(url, secure) {
   });
 }
 
+// ── Floating Composer Window ─────────────────────────────────────────────────
+let composerWindow = null;
+
+function openComposerWindow() {
+  if (composerWindow && !composerWindow.isDestroyed()) {
+    composerWindow.focus();
+    return;
+  }
+
+  const { screen } = require('electron');
+  const display = screen.getPrimaryDisplay();
+  const { width: screenW, height: screenH } = display.workAreaSize;
+
+  const composerW = 660;
+  const composerH = 480;
+
+  composerWindow = new BrowserWindow({
+    width: composerW,
+    height: composerH,
+    x: Math.round((screenW - composerW) / 2),
+    y: screenH - composerH - 40,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    resizable: true,
+    roundedCorners: true,
+    vibrancy: 'under-window',
+    visualEffectState: 'active',
+    backgroundColor: '#00000000',
+    hasShadow: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  // Load tarx.com/chat in the composer — just the chat interface
+  const composerURL = currentUrl === FALLBACK_URL
+    ? `${FALLBACK_URL}/chat`
+    : `${PRIMARY_URL}/chat`;
+  composerWindow.loadURL(composerURL);
+
+  // Inject glassmorphic styling once loaded
+  composerWindow.webContents.on('did-finish-load', () => {
+    composerWindow.webContents.insertCSS(`
+      /* Glassmorphic floating composer */
+      html, body {
+        background: transparent !important;
+        border-radius: 24px !important;
+        overflow: hidden !important;
+      }
+      /* Hide everything except the composer + COT */
+      [class*="sidebar"], [class*="Sidebar"], aside,
+      [class*="activity"], [class*="Activity"],
+      header, nav, footer {
+        display: none !important;
+      }
+      /* Make the main content area full-width */
+      main, [class*="main"], [class*="content"], [class*="canvas"] {
+        margin: 0 !important;
+        padding: 16px !important;
+        max-width: 100% !important;
+        width: 100% !important;
+      }
+    `);
+  });
+
+  // Close on Escape
+  composerWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'Escape') {
+      composerWindow.close();
+    }
+  });
+
+  composerWindow.on('closed', () => {
+    composerWindow = null;
+  });
+
+  composerWindow.on('blur', () => {
+    // Don't auto-close on blur — user might be copying text
+  });
+}
+
 // ── Periodic health check ────────────────────────────────────────────────────
 function startHealthLoop() {
   setInterval(async () => {
@@ -140,7 +284,7 @@ function startHealthLoop() {
       currentUrl = PRIMARY_URL;
       isOnline = true;
       trayManager?.setStatus('online');
-      mainWindow?.loadURL(PRIMARY_URL);
+      mainWindow?._tarxView?.webContents.loadURL(PRIMARY_URL);
       return;
     }
 
@@ -233,7 +377,7 @@ function showAbout() {
 
 function openPreferences() {
   if (mainWindow && currentUrl === PRIMARY_URL) {
-    mainWindow.loadURL(PRIMARY_URL + '/settings');
+    mainWindow._tarxView?.webContents.loadURL(PRIMARY_URL + '/settings');
   } else if (mainWindow) {
     mainWindow.focus();
   }

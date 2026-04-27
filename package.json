@@ -1,84 +1,53 @@
 {
-  "name": "tarx-electron",
+  "name": "tarx-desktop",
   "version": "1.0.0",
-  "description": "TARX desktop wrapper — loads tarx.com, falls back to local Bridge",
+  "description": "TARX Desktop — Local AI on your hardware",
   "main": "electron/main.js",
-  "homepage": "https://tarx.com",
-  "author": {
-    "name": "John Wantz",
-    "email": "john@tarx.com"
-  },
-  "license": "UNLICENSED",
-  "private": true,
   "scripts": {
     "start": "electron .",
-    "dev": "NODE_ENV=development electron .",
     "build": "electron-builder --mac",
-    "build:dir": "electron-builder --mac --dir",
-    "publish": "electron-builder --mac --publish always",
-    "postinstall": ""
+    "dev": "NODE_ENV=development electron ."
   },
-  "dependencies": {
-    "electron-updater": "^6.3.9"
-  },
+  "author": "TARXAN INC.",
+  "license": "UNLICENSED",
   "devDependencies": {
-    "electron": "^31.7.7",
-    "electron-builder": "^25.1.8",
-    "electron-notarize": "^1.2.2"
+    "@electron/notarize": "^3.1.1",
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
   },
   "build": {
-    "appId": "com.tarx.desktop",
+    "appId": "com.tarxan.tarx",
     "productName": "TARX",
-    "copyright": "Copyright © 2026 TARX INC.",
-    "directories": {
-      "output": "dist",
-      "buildResources": "assets"
-    },
-    "files": [
-      "electron/**/*",
-      "assets/**/*",
-      "node_modules/**/*"
-    ],
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "assets/icon.icns",
       "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist",
       "identity": "Developer ID Application: John Wantz (JH4243GARF)",
-      "minimumSystemVersion": "13.0",
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        }
-      ]
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
+    "afterSign": "./scripts/notarize.js",
     "dmg": {
       "title": "TARX",
-      "sign": false,
       "contents": [
         {
-          "x": 180,
-          "y": 170
+          "x": 130,
+          "y": 220
         },
         {
-          "x": 480,
-          "y": 170,
+          "x": 410,
+          "y": 220,
           "type": "link",
           "path": "/Applications"
         }
       ]
     },
-    "afterSign": "scripts/notarize.js",
     "publish": {
       "provider": "generic",
-      "url": "https://tarx.com/api/electron-releases",
-      "channel": "latest"
+      "url": "https://tarx.com/api/download/electron"
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3"
   }
 }
