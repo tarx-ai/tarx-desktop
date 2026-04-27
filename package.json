@@ -22,7 +22,7 @@
       "category": "public.app-category.productivity",
       "icon": "assets/icon.icns",
       "hardenedRuntime": true,
-      "identity": "Developer ID Application: John Wantz (JH4243GARF)",
+      "identity": "John Wantz (JH4243GARF)",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist"
     },
@@ -44,7 +44,7 @@
     },
     "publish": {
       "provider": "generic",
-      "url": "https://tarx.com/api/download/electron"
+      "url": "https://kmoymmv9q9p5rd1d.public.blob.vercel-storage.com/electron"
     }
   },
   "dependencies": {

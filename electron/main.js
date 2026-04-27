@@ -51,11 +51,10 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 16, y: 14 },
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 16, y: 18 },
     roundedCorners: true,
-    vibrancy: undefined,
-    backgroundColor: '#0A0A0D',
+    backgroundColor: '#FFFFFF',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -66,60 +65,67 @@ function createWindow() {
     },
   });
 
-  // macOS Sequoia+ corner radius (10px system default)
-  if (process.platform === 'darwin' && mainWindow.setWindowButtonVisibility) {
-    mainWindow.setWindowButtonVisibility(true);
-  }
+  // Web content fills the ENTIRE window. Traffic lights overlay on the sidebar.
+  // The web app's CSS handles the traffic light clearance (padding-top on sidebar).
 
-  // Use a separate BrowserView offset 44px from the top.
-  // The top 44px is native — traffic lights live there, nothing else.
-  // Web content cannot bleed into it because it physically starts at y=44.
-  const { BrowserView } = require('electron');
-  const view = new BrowserView({
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      webSecurity: true,
-    },
+  // Inject CSS after each page load to style the sidebar + title bar area
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow.webContents.insertCSS(`
+      /* ── Electron desktop: Claude-style sidebar with traffic light integration ── */
+
+      /* Title bar drag region — spans the header area */
+      body::before {
+        content: '';
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 52px;
+        -webkit-app-region: drag;
+        z-index: 99998;
+        pointer-events: none;
+      }
+
+      /* All interactive elements must not be draggable */
+      button, a, input, textarea, select, [role="button"], [contenteditable],
+      [data-radix-popper-content-wrapper] {
+        -webkit-app-region: no-drag;
+      }
+
+      /* Sidebar: raised surface, traffic light clearance, full height */
+      aside {
+        padding-top: 42px !important;
+        background: var(--tarx-surface-elevated, #1A1D24) !important;
+        border-right: 1px solid var(--tarx-border) !important;
+      }
+
+      /* Light mode: sidebar matches Claude desktop (warm white) */
+      .light-mode aside,
+      [data-theme="light"] aside {
+        background: #F5F5F7 !important;
+      }
+
+      /* Sidebar header: move below traffic lights */
+      aside > div:first-child {
+        margin-top: 0 !important;
+      }
+
+      /* Canvas header: shift right to clear traffic lights when sidebar is collapsed */
+      body {
+        padding-top: 0 !important;
+      }
+
+      /* Window content corner radius — matches macOS HIG feel */
+      html {
+        border-radius: 26px !important;
+        overflow: hidden !important;
+      }
+    `);
   });
-  mainWindow.setBrowserView(view);
-
-  const TITLE_BAR_HEIGHT = 44;
-
-  function resizeView() {
-    const [w, h] = mainWindow.getContentSize();
-    view.setBounds({ x: 0, y: TITLE_BAR_HEIGHT, width: w, height: h - TITLE_BAR_HEIGHT });
-  }
-  resizeView();
-  mainWindow.on('resize', resizeView);
-
-  // Title bar: solid #0A0A0D, traffic lights left, "Ask TARX" CTA right.
-  // CTA opens standalone floating composer window.
-  mainWindow.webContents.loadURL(`data:text/html,
-    <html style="margin:0;padding:0;background:%230A0A0D;-webkit-app-region:drag;height:${TITLE_BAR_HEIGHT}px;overflow:hidden;">
-    <body style="margin:0;padding:0;display:flex;align-items:center;justify-content:flex-end;height:${TITLE_BAR_HEIGHT}px;padding-right:16px;">
-      <button id="ask-tarx-btn"
-        style="-webkit-app-region:no-drag;background:%2392B6DE;color:%230A0A0D;border:none;border-radius:10px;padding:6px 16px;font-size:12px;font-weight:600;font-family:system-ui,sans-serif;cursor:pointer;letter-spacing:0.02em;"
-      >Ask TARX</button>
-      <script>
-        document.getElementById('ask-tarx-btn').addEventListener('click', () => {
-          window.electronAPI?.openComposer?.() || fetch('http://127.0.0.1:11440/health');
-        });
-      </script>
-    </body></html>
-  `);
 
   // IPC: "Ask TARX" opens floating composer
   ipcMain.on('open-composer', () => openComposerWindow());
-
-  // Also listen for the preload bridge
   ipcMain.handle('open-composer', () => openComposerWindow());
-
-  // Replace the direct URL loading — the BrowserView loads the content now
-  // Remove the old loadBestUrl call from mainWindow, use view instead
-  mainWindow._tarxView = view;
 
   loadBestUrl();
 
@@ -155,7 +161,7 @@ async function loadBestUrl() {
     currentUrl = PRIMARY_URL;
     isOnline = true;
     trayManager?.setStatus('online');
-    mainWindow?._tarxView?.webContents.loadURL(PRIMARY_URL);
+    mainWindow?.loadURL(PRIMARY_URL);
     return;
   }
 
@@ -164,14 +170,14 @@ async function loadBestUrl() {
     currentUrl = FALLBACK_URL;
     isOnline = false;
     trayManager?.setStatus('local');
-    mainWindow?._tarxView?.webContents.loadURL(FALLBACK_URL);
+    mainWindow?.loadURL(FALLBACK_URL);
     return;
   }
 
   // Both unreachable — show offline page
   isOnline = false;
   trayManager?.setStatus('offline');
-  mainWindow?._tarxView?.webContents.loadFile(path.join(__dirname, 'offline.html'));
+  mainWindow?.loadFile(path.join(__dirname, 'offline.html'));
 }
 
 function handleLoadFailure() {
@@ -180,10 +186,10 @@ function handleLoadFailure() {
       if (ok) {
         currentUrl = FALLBACK_URL;
         trayManager?.setStatus('local');
-        mainWindow?._tarxView?.webContents.loadURL(FALLBACK_URL);
+        mainWindow?.loadURL(FALLBACK_URL);
       } else {
         trayManager?.setStatus('offline');
-        mainWindow?._tarxView?.webContents.loadFile(path.join(__dirname, 'offline.html'));
+        mainWindow?.loadFile(path.join(__dirname, 'offline.html'));
       }
     });
   }
@@ -296,7 +302,7 @@ function startHealthLoop() {
       currentUrl = PRIMARY_URL;
       isOnline = true;
       trayManager?.setStatus('online');
-      mainWindow?._tarxView?.webContents.loadURL(PRIMARY_URL);
+      mainWindow?.loadURL(PRIMARY_URL);
       return;
     }
 
@@ -389,7 +395,7 @@ function showAbout() {
 
 function openPreferences() {
   if (mainWindow && currentUrl === PRIMARY_URL) {
-    mainWindow._tarxView?.webContents.loadURL(PRIMARY_URL + '/settings');
+    mainWindow.loadURL(PRIMARY_URL + '/settings');
   } else if (mainWindow) {
     mainWindow.focus();
   }
@@ -457,19 +463,14 @@ function handleDeepLink(url) {
     const params = parsed.search; // e.g., ?token=X&email=Y
 
     if (fullPath.startsWith('/auth/callback')) {
-      // Redirect to tarx.com auth callback inside the Electron window
-      const webUrl = `${PRIMARY_URL}/api/auth/callback/resend${params}`;
+      // Redirect to Auth.js callback with the token, redirecting to / after auth
+      const webUrl = `${PRIMARY_URL}/api/auth/callback/resend${params}&callbackUrl=%2F`;
 
       if (mainWindow) {
         mainWindow.show();
         mainWindow.focus();
         // Load the auth callback in the BrowserView
-        const view = mainWindow._tarxView;
-        if (view) {
-          view.webContents.loadURL(webUrl);
-        } else {
-          mainWindow.loadURL(webUrl);
-        }
+        mainWindow.loadURL(webUrl);
       }
 
       console.log(`[tarx] Deep link auth: tarx://auth/callback → redirected (token redacted)`);
