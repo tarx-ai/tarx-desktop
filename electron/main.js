@@ -18,6 +18,15 @@ let mainWindow = null;
 let trayManager = null;
 let currentUrl = PRIMARY_URL;
 let isOnline = true;
+let pendingDeepLink = null; // Stores deep link if received before window is ready
+
+// ── Deep link protocol (tarx://) ─────────────────────────────────────────────
+if (process.defaultApp) {
+  // Dev mode: register with path to electron binary
+  app.setAsDefaultProtocolClient('tarx', process.execPath, [path.resolve(process.argv[1])]);
+} else {
+  app.setAsDefaultProtocolClient('tarx');
+}
 
 // ── App single-instance lock ─────────────────────────────────────────────────
 const gotLock = app.requestSingleInstanceLock();
@@ -25,11 +34,14 @@ if (!gotLock) {
   app.quit();
   process.exit(0);
 }
-app.on('second-instance', () => {
+app.on('second-instance', (_event, argv) => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
   }
+  // Windows/Linux: deep link URL is in argv
+  const deepLink = argv.find(arg => arg.startsWith('tarx://'));
+  if (deepLink) handleDeepLink(deepLink);
 });
 
 // ── Window creation ──────────────────────────────────────────────────────────
@@ -420,6 +432,53 @@ autoUpdater.on('update-downloaded', (info) => {
   });
 });
 
+// ── Deep link handler (tarx://auth/callback?token=...) ───────────────────────
+// macOS: open-url fires when user clicks a tarx:// link (e.g., magic link email)
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleDeepLink(url);
+});
+
+function handleDeepLink(url) {
+  if (!url || !url.startsWith('tarx://')) return;
+
+  // If window isn't ready yet, queue the link for after creation
+  if (!mainWindow) {
+    pendingDeepLink = url;
+    return;
+  }
+
+  // Convert tarx://auth/callback?token=X&email=Y
+  // to     https://tarx.com/api/auth/callback/resend?token=X&email=Y
+  try {
+    const parsed = new URL(url);
+    // tarx://auth/callback → host="auth", pathname="/callback"
+    const fullPath = `/${parsed.host}${parsed.pathname}`; // e.g., /auth/callback
+    const params = parsed.search; // e.g., ?token=X&email=Y
+
+    if (fullPath.startsWith('/auth/callback')) {
+      // Redirect to tarx.com auth callback inside the Electron window
+      const webUrl = `${PRIMARY_URL}/api/auth/callback/resend${params}`;
+
+      if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+        // Load the auth callback in the BrowserView
+        const view = mainWindow._tarxView;
+        if (view) {
+          view.webContents.loadURL(webUrl);
+        } else {
+          mainWindow.loadURL(webUrl);
+        }
+      }
+
+      console.log(`[tarx] Deep link auth: tarx://auth/callback → redirected (token redacted)`);
+    }
+  } catch (err) {
+    console.error('[tarx] Deep link parse error:', err.message);
+  }
+}
+
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
   // Import tray after app is ready (requires display)
@@ -429,6 +488,16 @@ app.whenReady().then(async () => {
   buildMenu();
   createWindow();
   startHealthLoop();
+
+  // Process any deep link received before window was ready
+  if (pendingDeepLink) {
+    handleDeepLink(pendingDeepLink);
+    pendingDeepLink = null;
+  }
+
+  // macOS: check if launched via deep link (argv contains the URL)
+  const launchUrl = process.argv.find(arg => arg.startsWith('tarx://'));
+  if (launchUrl) handleDeepLink(launchUrl);
 });
 
 app.on('activate', () => {
