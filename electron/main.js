@@ -54,7 +54,8 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 18 },
     roundedCorners: true,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#0A0A0D',
+    hasShadow: true,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -68,64 +69,75 @@ function createWindow() {
   // Web content fills the ENTIRE window. Traffic lights overlay on the sidebar.
   // The web app's CSS handles the traffic light clearance (padding-top on sidebar).
 
-  // Inject CSS after each page load to style the sidebar + title bar area
+  // Inject desktop integration CSS + JS after each page load
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow.webContents.insertCSS(`
-      /* ── Electron desktop: Claude-style sidebar with traffic light integration ── */
-
-      /* Title bar drag region — spans the header area */
+      /* Drag region for title bar */
       body::before {
         content: '';
         position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
+        top: 0; left: 0; right: 0;
         height: 52px;
         -webkit-app-region: drag;
         z-index: 99998;
         pointer-events: none;
       }
-
-      /* All interactive elements must not be draggable */
       button, a, input, textarea, select, [role="button"], [contenteditable],
       [data-radix-popper-content-wrapper] {
         -webkit-app-region: no-drag;
       }
-
-      /* Sidebar: raised surface, traffic light clearance, full height */
+      /* Sidebar: raised surface, traffic light clearance */
       aside {
         padding-top: 42px !important;
         background: var(--tarx-surface-elevated, #1A1D24) !important;
         border-right: 1px solid var(--tarx-border) !important;
       }
-
-      /* Light mode: sidebar matches Claude desktop (warm white) */
-      .light-mode aside,
-      [data-theme="light"] aside {
+      .light-mode aside, [data-theme="light"] aside {
         background: #F5F5F7 !important;
       }
-
-      /* Sidebar header: move below traffic lights */
-      aside > div:first-child {
-        margin-top: 0 !important;
-      }
-
-      /* Canvas header: shift right to clear traffic lights when sidebar is collapsed */
-      body {
-        padding-top: 0 !important;
-      }
-
-      /* Window content corner radius — matches macOS HIG feel */
-      html {
-        border-radius: 26px !important;
-        overflow: hidden !important;
+      aside > div:first-child { margin-top: 0 !important; }
+      body { padding-top: 0 !important; }
+      /* Window background matches content — native macOS handles corner radius */
+      html, body {
+        background: var(--tarx-bg, #0A0A0D) !important;
       }
     `);
+
+    // ── JS: expose version only — sidebar logic handled in React (AppShell) ──
+    mainWindow.webContents.executeJavaScript(`
+      (function() {
+        if (window.__tarxDesktopInjected) return;
+        window.__tarxDesktopInjected = true;
+        var d = window.__TARX_DESKTOP__;
+        if (d && d.getVersion) {
+          d.getVersion().then(function(v) { window.__TARX_VERSION = v; });
+        }
+      })();
+    `).catch(function() {});
   });
 
   // IPC: "Ask TARX" opens floating composer
   ipcMain.on('open-composer', () => openComposerWindow());
   ipcMain.handle('open-composer', () => openComposerWindow());
+
+  // ── Voice: auto-grant microphone to TARX origins ──────────────────
+  mainWindow.webContents.session.setPermissionRequestHandler(
+    (webContents, permission, callback) => {
+      const url = webContents.getURL();
+      const isTarx = url.includes('tarx.com') || url.includes('localhost') || url.startsWith('file://');
+      if ((permission === 'media' || permission === 'microphone') && isTarx) {
+        callback(true);
+      } else {
+        callback(permission === 'clipboard-read' || permission === 'notifications');
+      }
+    }
+  );
+  mainWindow.webContents.session.setPermissionCheckHandler(
+    (webContents, permission) => {
+      if (permission === 'media' || permission === 'microphone') return true;
+      return false;
+    }
+  );
 
   loadBestUrl();
 
@@ -134,8 +146,8 @@ function createWindow() {
     if (!isDev) checkForUpdates();
   });
 
-  // Handle navigation on the BrowserView (not mainWindow)
-  view.webContents.setWindowOpenHandler(({ url }) => {
+  // Handle external links — open in system browser
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://tarx.com') || url.startsWith('http://localhost')) {
       return { action: 'allow' };
     }
@@ -143,7 +155,7 @@ function createWindow() {
     return { action: 'deny' };
   });
 
-  view.webContents.on('did-fail-load', (_event, errorCode, errorDesc, validatedUrl) => {
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDesc, validatedUrl) => {
     if (errorCode === -3) return;
     console.error(`[tarx] Load failed: ${errorCode} ${errorDesc} at ${validatedUrl}`);
     handleLoadFailure();
@@ -333,7 +345,7 @@ function buildMenu() {
         { type: 'separator' },
         {
           label: 'Check for Updates…',
-          click: () => checkForUpdates(true),
+          click: () => checkForUpdates(),
         },
         { type: 'separator' },
         {
@@ -401,41 +413,28 @@ function openPreferences() {
   }
 }
 
-// ── Auto-updater ─────────────────────────────────────────────────────────────
-function checkForUpdates(manual = false) {
-  autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-    if (manual) {
-      dialog.showMessageBox(mainWindow, {
-        type: 'info',
-        title: 'Update Check',
-        message: 'Could not check for updates.',
-        detail: err.message,
-        buttons: ['OK'],
-      });
-    }
+// ── Auto-updater (consumer-friendly: no dialogs, footer-based) ──────────────
+function checkForUpdates() {
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.checkForUpdates().catch((err) => {
+    console.log('[tarx] Update check failed:', err.message);
   });
 }
 
 autoUpdater.on('update-available', (info) => {
-  dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    title: 'Update Available',
-    message: `TARX ${info.version} is available.`,
-    detail: 'Downloading update in the background…',
-    buttons: ['OK'],
-  });
+  console.log(`[tarx] Update available: ${info.version}`);
+  mainWindow?.webContents.send('tarx:update-available', { version: info.version });
 });
 
 autoUpdater.on('update-downloaded', (info) => {
-  dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    title: 'Update Ready',
-    message: `TARX ${info.version} is ready to install.`,
-    detail: 'Restart TARX to apply the update.',
-    buttons: ['Restart Now', 'Later'],
-  }).then(({ response }) => {
-    if (response === 0) autoUpdater.quitAndInstall();
-  });
+  console.log(`[tarx] Update downloaded: ${info.version}`);
+  mainWindow?.webContents.send('tarx:update-ready', { version: info.version });
+});
+
+// User clicks "Relaunch to update" in the footer
+ipcMain.handle('tarx:relaunch-to-update', () => {
+  autoUpdater.quitAndInstall();
 });
 
 // ── Deep link handler (tarx://auth/callback?token=...) ───────────────────────
@@ -469,8 +468,18 @@ function handleDeepLink(url) {
       if (mainWindow) {
         mainWindow.show();
         mainWindow.focus();
-        // Load the auth callback in the BrowserView
         mainWindow.loadURL(webUrl);
+
+        // After auth callback processes, detect if we landed on an error page
+        // and recover gracefully by going home
+        mainWindow.webContents.once('did-finish-load', () => {
+          const finalUrl = mainWindow.webContents.getURL();
+          if (finalUrl.includes('/login?error=')) {
+            // Token was already used (e.g. clicked in browser first)
+            // Check if user has a valid session anyway and go home
+            mainWindow.loadURL(PRIMARY_URL);
+          }
+        });
       }
 
       console.log(`[tarx] Deep link auth: tarx://auth/callback → redirected (token redacted)`);
@@ -484,7 +493,10 @@ function handleDeepLink(url) {
 app.whenReady().then(async () => {
   // Import tray after app is ready (requires display)
   const { TrayManager } = require('./tray');
-  trayManager = new TrayManager({ onOpen: () => mainWindow?.show() });
+  trayManager = new TrayManager({
+    onOpen: () => mainWindow?.show(),
+    onAskTarx: () => openComposerWindow(),
+  });
 
   buildMenu();
   createWindow();
@@ -515,6 +527,8 @@ app.on('window-all-closed', () => {
 });
 
 // IPC — renderer can request status
+ipcMain.handle('tarx:version', () => app.getVersion());
+
 ipcMain.handle('tarx:status', () => ({
   version: app.getVersion(),
   online: isOnline,

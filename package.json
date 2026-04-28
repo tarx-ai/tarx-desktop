@@ -1,6 +1,6 @@
 {
   "name": "tarx-desktop",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "TARX Desktop — Local AI on your hardware",
   "main": "electron/main.js",
   "scripts": {
@@ -24,7 +24,10 @@
       "hardenedRuntime": true,
       "identity": "John Wantz (JH4243GARF)",
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "TARX uses the microphone for voice input so you can speak instead of type."
+      }
     },
     "afterSign": "./scripts/notarize.js",
     "dmg": {
