@@ -8,6 +8,9 @@ const http = require('http');
 
 const isDev = process.env.NODE_ENV === 'development';
 
+// Enable accessibility tree for TARX Vision (AX-based UI automation)
+app.commandLine.appendSwitch('force-renderer-accessibility');
+
 // URLs — primary is tarx.com, fallback is local Bridge
 const PRIMARY_URL = 'https://tarx.com';
 const FALLBACK_PORTS = [11440, 11441];
