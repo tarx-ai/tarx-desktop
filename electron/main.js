@@ -473,13 +473,11 @@ function handleDeepLink(url) {
         mainWindow.focus();
         mainWindow.loadURL(webUrl);
 
-        // After auth callback processes, detect if we landed on an error page
-        // and recover gracefully by going home
+        // After auth callback processes, always navigate to home.
+        // Auth.js sometimes lands on /settings or /login?error= — override both.
         mainWindow.webContents.once('did-finish-load', () => {
           const finalUrl = mainWindow.webContents.getURL();
-          if (finalUrl.includes('/login?error=')) {
-            // Token was already used (e.g. clicked in browser first)
-            // Check if user has a valid session anyway and go home
+          if (finalUrl.includes('/login?error=') || finalUrl.includes('/settings') || finalUrl.includes('/api/auth')) {
             mainWindow.loadURL(PRIMARY_URL);
           }
         });
