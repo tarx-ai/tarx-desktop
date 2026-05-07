@@ -5,6 +5,8 @@ const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const https = require('https');
 const http = require('http');
+const fs = require('fs');
+const { spawn } = require('child_process');
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -16,12 +18,181 @@ const PRIMARY_URL = 'https://tarx.com';
 const FALLBACK_PORTS = [11440, 11441];
 const FALLBACK_URL = 'http://localhost:11440'; // Updated dynamically
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
+const RUNTIME_HEALTH_URL = 'http://127.0.0.1:11440/health';
+const RUNTIME_START_TIMEOUT_MS = 12_000;
 
 let mainWindow = null;
 let trayManager = null;
 let currentUrl = PRIMARY_URL;
 let isOnline = true;
 let pendingDeepLink = null; // Stores deep link if received before window is ready
+let updateState = { status: 'idle', updatedAt: null, version: null, error: null };
+let runtimeState = { status: 'unknown', updatedAt: null, health: null, error: null, pid: null };
+let composerIpcRegistered = false;
+
+function diagnosticsDir() {
+  const dir = path.join(app.getPath('userData'), 'diagnostics');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function writeDiagnostic(name, payload) {
+  try {
+    fs.writeFileSync(path.join(diagnosticsDir(), name), JSON.stringify(payload, null, 2));
+  } catch (error) {
+    console.log(`[tarx] Failed to write ${name}:`, error.message);
+  }
+}
+
+function setUpdateState(next) {
+  updateState = {
+    ...updateState,
+    ...next,
+    updatedAt: new Date().toISOString(),
+  };
+  mainWindow?.webContents.send('tarx:update-status', updateState);
+  writeDiagnostic('updater-status.json', updateState);
+}
+
+function setRuntimeState(next) {
+  runtimeState = {
+    ...runtimeState,
+    ...next,
+    updatedAt: new Date().toISOString(),
+  };
+  mainWindow?.webContents.send('tarx:runtime-status', runtimeState);
+  writeDiagnostic('runtime-status.json', runtimeState);
+}
+
+function userHome() {
+  return app.getPath('home');
+}
+
+function runtimeBridgePath() {
+  return path.join(userHome(), '.tarx', 'servers', 'tarx-ops', 'dist', 'bridge.js');
+}
+
+function runtimeLogPath() {
+  return path.join(userHome(), '.tarx', 'logs', 'bridge.log');
+}
+
+function nodePath() {
+  const bundled = path.join(userHome(), '.local', 'node', 'bin', 'node');
+  if (fs.existsSync(bundled)) return bundled;
+  return process.execPath;
+}
+
+async function getRuntimeHealth(timeoutMs = 2500) {
+  const ok = await probe(RUNTIME_HEALTH_URL, false, timeoutMs);
+  if (!ok) return null;
+  return new Promise((resolve) => {
+    const req = http.get(RUNTIME_HEALTH_URL, { timeout: timeoutMs }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { body += chunk; });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch {
+          resolve({ status: res.statusCode < 500 ? 'ok' : 'error' });
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+  });
+}
+
+function requestBridgeJson(pathname, { method = 'GET', body = null, timeoutMs = 5000 } = {}) {
+  return new Promise((resolve) => {
+    const payload = body ? JSON.stringify(body) : null;
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: 11440,
+      path: pathname,
+      method,
+      timeout: timeoutMs,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
+      },
+    }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { text += chunk; });
+      res.on('end', () => {
+        try {
+          const data = text ? JSON.parse(text) : {};
+          resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, data });
+        } catch {
+          resolve({ ok: false, status: res.statusCode, data: { error: 'invalid_json', raw: text } });
+        }
+      });
+    });
+    req.on('error', (error) => resolve({ ok: false, status: 0, data: { error: error.message } }));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ ok: false, status: 0, data: { error: 'timeout' } });
+    });
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+async function waitForRuntime(timeoutMs = RUNTIME_START_TIMEOUT_MS) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const health = await getRuntimeHealth(2000);
+    if (health) return health;
+    await new Promise(resolve => setTimeout(resolve, 750));
+  }
+  return null;
+}
+
+async function ensureLocalRuntime() {
+  const existing = await getRuntimeHealth();
+  if (existing) {
+    setRuntimeState({ status: 'ready', health: existing, error: null, pid: null });
+    return true;
+  }
+
+  const bridge = runtimeBridgePath();
+  if (!fs.existsSync(bridge)) {
+    setRuntimeState({
+      status: 'missing',
+      health: null,
+      error: `Bridge runtime not found at ${bridge}`,
+      pid: null,
+    });
+    return false;
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(runtimeLogPath()), { recursive: true });
+    const out = fs.openSync(runtimeLogPath(), 'a');
+    const child = spawn(nodePath(), [bridge], {
+      detached: true,
+      stdio: ['ignore', out, out],
+      env: {
+        ...process.env,
+        TARX_PHONE_HOME: process.env.TARX_PHONE_HOME || 'true',
+      },
+    });
+    child.unref();
+    setRuntimeState({ status: 'starting', health: null, error: null, pid: child.pid });
+  } catch (error) {
+    setRuntimeState({ status: 'error', health: null, error: error.message, pid: null });
+    return false;
+  }
+
+  const health = await waitForRuntime();
+  if (health) {
+    setRuntimeState({ status: 'ready', health, error: null });
+    return true;
+  }
+  setRuntimeState({ status: 'error', health: null, error: 'Bridge did not become healthy before timeout' });
+  return false;
+}
 
 // ── Deep link protocol (tarx://) ─────────────────────────────────────────────
 if (process.defaultApp) {
@@ -119,10 +290,6 @@ function createWindow() {
     `).catch(function() {});
   });
 
-  // IPC: "Ask TARX" opens floating composer
-  ipcMain.on('open-composer', () => openComposerWindow());
-  ipcMain.handle('open-composer', () => openComposerWindow());
-
   // ── Voice: auto-grant microphone to TARX origins ──────────────────
   mainWindow.webContents.session.setPermissionRequestHandler(
     (webContents, permission, callback) => {
@@ -169,6 +336,14 @@ function createWindow() {
   });
 }
 
+function registerComposerIpc() {
+  if (composerIpcRegistered) return;
+  composerIpcRegistered = true;
+
+  ipcMain.on('open-composer', () => openComposerWindow());
+  ipcMain.handle('open-composer', () => openComposerWindow());
+}
+
 // ── URL routing with fallback ────────────────────────────────────────────────
 async function loadBestUrl() {
   const primary = await probe(PRIMARY_URL + '/api/version', true);
@@ -210,10 +385,10 @@ function handleLoadFailure() {
   }
 }
 
-function probe(url, secure) {
+function probe(url, secure, timeoutMs = 5000) {
   return new Promise((resolve) => {
     const mod = secure ? https : http;
-    const req = mod.get(url, { timeout: 5000 }, (res) => {
+    const req = mod.get(url, { timeout: timeoutMs }, (res) => {
       resolve(res.statusCode < 500);
       res.resume();
     });
@@ -420,24 +595,43 @@ function openPreferences() {
 function checkForUpdates() {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  setUpdateState({ status: 'checking', error: null });
   autoUpdater.checkForUpdates().catch((err) => {
+    setUpdateState({ status: 'error', error: err.message });
     console.log('[tarx] Update check failed:', err.message);
   });
 }
 
 autoUpdater.on('update-available', (info) => {
   console.log(`[tarx] Update available: ${info.version}`);
+  setUpdateState({ status: 'available', version: info.version, error: null });
   mainWindow?.webContents.send('tarx:update-available', { version: info.version });
+});
+
+autoUpdater.on('update-not-available', (info) => {
+  console.log(`[tarx] No update available: ${info.version || app.getVersion()}`);
+  setUpdateState({ status: 'not-available', version: info.version || app.getVersion(), error: null });
 });
 
 autoUpdater.on('update-downloaded', (info) => {
   console.log(`[tarx] Update downloaded: ${info.version}`);
+  setUpdateState({ status: 'downloaded', version: info.version, error: null });
   mainWindow?.webContents.send('tarx:update-ready', { version: info.version });
+});
+
+autoUpdater.on('error', (err) => {
+  setUpdateState({ status: 'error', error: err.message });
+  console.log('[tarx] Update error:', err.message);
 });
 
 // User clicks "Relaunch to update" in the footer
 ipcMain.handle('tarx:relaunch-to-update', () => {
   autoUpdater.quitAndInstall();
+});
+
+ipcMain.handle('tarx:check-for-updates', () => {
+  checkForUpdates();
+  return updateState;
 });
 
 // ── Deep link handler (tarx://auth/callback?token=...) ───────────────────────
@@ -500,6 +694,8 @@ app.whenReady().then(async () => {
   });
 
   buildMenu();
+  await ensureLocalRuntime();
+  registerComposerIpc();
   createWindow();
   startHealthLoop();
 
@@ -530,10 +726,50 @@ app.on('window-all-closed', () => {
 // IPC — renderer can request status
 ipcMain.handle('tarx:version', () => app.getVersion());
 
+ipcMain.handle('tarx:runtime-status', async () => {
+  const health = await getRuntimeHealth().catch(() => null);
+  if (health) setRuntimeState({ status: 'ready', health, error: null });
+  return runtimeState;
+});
+
+ipcMain.handle('tarx:local-data-status', async () => {
+  await ensureLocalRuntime();
+  return requestBridgeJson('/api/local-data/status');
+});
+
+ipcMain.handle('tarx:restart-runtime', async () => {
+  const result = await requestBridgeJson('/api/local-data/restart-runtime', { method: 'POST', body: {} });
+  setRuntimeState({ status: 'restarting', health: null, error: null });
+  setTimeout(() => ensureLocalRuntime(), 1500);
+  return result;
+});
+
+ipcMain.handle('tarx:fresh-app-test', async () => {
+  await ensureLocalRuntime();
+  return requestBridgeJson('/api/local-data/fresh-app-test', { method: 'POST', body: {} });
+});
+
+ipcMain.handle('tarx:full-wipe-prepare', async () => {
+  await ensureLocalRuntime();
+  return requestBridgeJson('/api/local-data/full-wipe/prepare', { method: 'POST', body: {} });
+});
+
+ipcMain.handle('tarx:full-wipe-confirm', async (_event, payload) => {
+  await ensureLocalRuntime();
+  return requestBridgeJson('/api/local-data/full-wipe/confirm', { method: 'POST', body: payload || {} });
+});
+
+ipcMain.handle('tarx:vault-reset', async (_event, payload) => {
+  await ensureLocalRuntime();
+  return requestBridgeJson('/api/local-data/vault-reset', { method: 'POST', body: payload || {} });
+});
+
 ipcMain.handle('tarx:status', () => ({
   version: app.getVersion(),
   online: isOnline,
   currentUrl,
   platform: process.platform,
   arch: process.arch,
+  update: updateState,
+  runtime: runtimeState,
 }));
