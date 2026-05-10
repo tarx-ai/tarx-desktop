@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, shell, ipcMain, nativeImage, dialog } = require('electron');
+const { app, BrowserWindow, Menu, shell, ipcMain, nativeImage, dialog, clipboard } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const https = require('https');
@@ -20,6 +20,7 @@ const FALLBACK_URL = 'http://localhost:11440'; // Updated dynamically
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 const RUNTIME_HEALTH_URL = 'http://127.0.0.1:11440/health';
 const RUNTIME_START_TIMEOUT_MS = 12_000;
+const UPDATE_CHECK_INTERVAL_MS = 60_000;
 
 let mainWindow = null;
 let trayManager = null;
@@ -225,8 +226,8 @@ function createWindow() {
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 18 },
+    titleBarStyle: 'hidden',
+    trafficLightPosition: { x: 24, y: 24 },
     roundedCorners: true,
     backgroundColor: '#0A0A0D',
     hasShadow: true,
@@ -251,7 +252,7 @@ function createWindow() {
         content: '';
         position: fixed;
         top: 0; left: 0; right: 0;
-        height: 52px;
+        height: 60px;
         -webkit-app-region: drag;
         z-index: 99998;
         pointer-events: none;
@@ -260,12 +261,7 @@ function createWindow() {
       [data-radix-popper-content-wrapper] {
         -webkit-app-region: no-drag;
       }
-      /* Sidebar: raised surface, traffic light clearance */
-      aside {
-        padding-top: 42px !important;
-        background: var(--tarx-surface-elevated, #1A1D24) !important;
-        border-right: 1px solid var(--tarx-border) !important;
-      }
+      /* Web shell owns chrome geometry. Native only supplies the drag region. */
       .light-mode aside, [data-theme="light"] aside {
         background: #F5F5F7 !important;
       }
@@ -313,7 +309,10 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
-    if (!isDev) checkForUpdates();
+    if (!isDev) {
+      checkForUpdates({ download: false });
+      setInterval(() => checkForUpdates({ download: false, silent: true }), UPDATE_CHECK_INTERVAL_MS);
+    }
   });
 
   // Handle external links — open in system browser
@@ -592,13 +591,26 @@ function openPreferences() {
 }
 
 // ── Auto-updater (consumer-friendly: no dialogs, footer-based) ──────────────
-function checkForUpdates() {
-  autoUpdater.autoDownload = true;
+function checkForUpdates({ download = false, silent = false } = {}) {
+  autoUpdater.autoDownload = download;
   autoUpdater.autoInstallOnAppQuit = true;
-  setUpdateState({ status: 'checking', error: null });
+  if (!silent) setUpdateState({ status: 'checking', error: null });
   autoUpdater.checkForUpdates().catch((err) => {
     setUpdateState({ status: 'error', error: err.message });
     console.log('[tarx] Update check failed:', err.message);
+  });
+}
+
+function downloadUpdate() {
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  setUpdateState({ status: 'downloading', error: null });
+  const maybePromise = typeof autoUpdater.downloadUpdate === 'function'
+    ? autoUpdater.downloadUpdate()
+    : autoUpdater.checkForUpdates();
+  return Promise.resolve(maybePromise).catch((err) => {
+    setUpdateState({ status: 'error', error: err.message });
+    console.log('[tarx] Update download failed:', err.message);
   });
 }
 
@@ -630,8 +642,18 @@ ipcMain.handle('tarx:relaunch-to-update', () => {
 });
 
 ipcMain.handle('tarx:check-for-updates', () => {
-  checkForUpdates();
+  checkForUpdates({ download: false });
   return updateState;
+});
+
+ipcMain.handle('tarx:download-update', () => {
+  downloadUpdate();
+  return updateState;
+});
+
+ipcMain.handle('tarx:copy-text', (_event, value) => {
+  clipboard.writeText(String(value || ''));
+  return true;
 });
 
 // ── Deep link handler (tarx://auth/callback?token=...) ───────────────────────
