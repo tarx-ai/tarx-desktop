@@ -635,9 +635,21 @@ autoUpdater.on('update-not-available', (info) => {
   setUpdateState({ status: 'not-available', version: info.version || app.getVersion(), error: null });
 });
 
+autoUpdater.on('download-progress', (progress) => {
+  const percent = Number.isFinite(progress.percent) ? progress.percent : 0;
+  setUpdateState({
+    status: 'download-progress',
+    percent,
+    transferred: progress.transferred,
+    total: progress.total,
+    bytesPerSecond: progress.bytesPerSecond,
+    error: null,
+  });
+});
+
 autoUpdater.on('update-downloaded', (info) => {
   console.log(`[tarx] Update downloaded: ${info.version}`);
-  setUpdateState({ status: 'downloaded', version: info.version, error: null });
+  setUpdateState({ status: 'downloaded', version: info.version, percent: 100, error: null });
   mainWindow?.webContents.send('tarx:update-ready', { version: info.version });
 });
 
