@@ -21,6 +21,7 @@ const HEALTH_CHECK_INTERVAL_MS = 30_000;
 const RUNTIME_HEALTH_URL = 'http://127.0.0.1:11440/health';
 const RUNTIME_START_TIMEOUT_MS = 12_000;
 const UPDATE_CHECK_INTERVAL_MS = 60_000;
+const RESPONSIVE_CHROME_BREAKPOINT = 1100;
 
 let mainWindow = null;
 let trayManager = null;
@@ -30,6 +31,12 @@ let pendingDeepLink = null; // Stores deep link if received before window is rea
 let updateState = { status: 'idle', updatedAt: null, version: null, error: null };
 let runtimeState = { status: 'unknown', updatedAt: null, health: null, error: null, pid: null };
 let composerIpcRegistered = false;
+
+function syncWindowButtonVisibility() {
+  if (process.platform !== 'darwin' || !mainWindow || typeof mainWindow.setWindowButtonVisibility !== 'function') return;
+  const { width } = mainWindow.getBounds();
+  mainWindow.setWindowButtonVisibility(width >= RESPONSIVE_CHROME_BREAKPOINT);
+}
 
 function diagnosticsDir() {
   const dir = path.join(app.getPath('userData'), 'diagnostics');
@@ -243,6 +250,8 @@ function createWindow() {
 
   // Web content fills the ENTIRE window. Traffic lights overlay on the sidebar.
   // The web app's CSS handles the traffic light clearance (padding-top on sidebar).
+  syncWindowButtonVisibility();
+  mainWindow.on('resize', syncWindowButtonVisibility);
 
   // Inject desktop integration CSS + JS after each page load
   mainWindow.webContents.on('did-finish-load', () => {
@@ -308,6 +317,7 @@ function createWindow() {
   loadBestUrl();
 
   mainWindow.once('ready-to-show', () => {
+    syncWindowButtonVisibility();
     mainWindow.show();
     if (!isDev) {
       checkForUpdates({ download: false });
