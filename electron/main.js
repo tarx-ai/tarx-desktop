@@ -21,6 +21,7 @@ const HEALTH_CHECK_INTERVAL_MS = 30_000;
 const RUNTIME_HEALTH_URL = 'http://127.0.0.1:11440/health';
 const RUNTIME_START_TIMEOUT_MS = 12_000;
 const UPDATE_CHECK_INTERVAL_MS = 60_000;
+const UPDATE_DOWNLOAD_STALL_MS = 20_000;
 const RESPONSIVE_CHROME_BREAKPOINT = 1100;
 
 let mainWindow = null;
@@ -31,6 +32,8 @@ let pendingDeepLink = null; // Stores deep link if received before window is rea
 let updateState = { status: 'idle', updatedAt: null, version: null, error: null };
 let runtimeState = { status: 'unknown', updatedAt: null, health: null, error: null, pid: null };
 let composerIpcRegistered = false;
+let updateDownloadWatchdog = null;
+let updateDownloadInFlight = null;
 
 function syncWindowButtonVisibility() {
   if (process.platform !== 'darwin' || !mainWindow || typeof mainWindow.setWindowButtonVisibility !== 'function') return;
@@ -60,6 +63,25 @@ function setUpdateState(next) {
   };
   mainWindow?.webContents.send('tarx:update-status', updateState);
   writeDiagnostic('updater-status.json', updateState);
+}
+
+function clearUpdateDownloadWatchdog() {
+  if (updateDownloadWatchdog) clearTimeout(updateDownloadWatchdog);
+  updateDownloadWatchdog = null;
+}
+
+function armUpdateDownloadWatchdog() {
+  clearUpdateDownloadWatchdog();
+  updateDownloadWatchdog = setTimeout(() => {
+    if (updateState.status !== 'downloading' && updateState.status !== 'download-progress') return;
+    const transferred = Number(updateState.transferred || 0);
+    if (transferred > 0) return;
+    setUpdateState({
+      status: 'error',
+      error: 'Update download did not start. Check the updater feed and try again.',
+    });
+    console.log('[tarx] Update download stalled before first progress event');
+  }, UPDATE_DOWNLOAD_STALL_MS);
 }
 
 function setRuntimeState(next) {
@@ -605,23 +627,39 @@ function checkForUpdates({ download = false, silent = false } = {}) {
   autoUpdater.autoDownload = download;
   autoUpdater.autoInstallOnAppQuit = true;
   if (!silent) setUpdateState({ status: 'checking', error: null });
-  autoUpdater.checkForUpdates().catch((err) => {
+  return autoUpdater.checkForUpdates().catch((err) => {
     setUpdateState({ status: 'error', error: err.message });
     console.log('[tarx] Update check failed:', err.message);
+    throw err;
   });
 }
 
 function downloadUpdate() {
+  if (updateDownloadInFlight) return updateDownloadInFlight;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
-  setUpdateState({ status: 'downloading', error: null });
-  const maybePromise = typeof autoUpdater.downloadUpdate === 'function'
-    ? autoUpdater.downloadUpdate()
-    : autoUpdater.checkForUpdates();
-  return Promise.resolve(maybePromise).catch((err) => {
-    setUpdateState({ status: 'error', error: err.message });
-    console.log('[tarx] Update download failed:', err.message);
-  });
+  setUpdateState({ status: 'downloading', percent: 1, error: null });
+  armUpdateDownloadWatchdog();
+  updateDownloadInFlight = (async () => {
+    try {
+      if (typeof autoUpdater.downloadUpdate === 'function' && updateState.version) {
+        return await autoUpdater.downloadUpdate();
+      }
+      return await autoUpdater.checkForUpdates();
+    } catch (err) {
+      const message = err?.message || String(err);
+      if (/check.*updates?|no update info|update info/i.test(message)) {
+        console.log('[tarx] Update download requested before native update info was warm; rechecking with autoDownload.');
+        return autoUpdater.checkForUpdates();
+      }
+      setUpdateState({ status: 'error', error: message });
+      console.log('[tarx] Update download failed:', message);
+      throw err;
+    } finally {
+      updateDownloadInFlight = null;
+    }
+  })();
+  return updateDownloadInFlight;
 }
 
 autoUpdater.on('update-available', (info) => {
@@ -637,9 +675,10 @@ autoUpdater.on('update-not-available', (info) => {
 
 autoUpdater.on('download-progress', (progress) => {
   const percent = Number.isFinite(progress.percent) ? progress.percent : 0;
+  if (percent > 0) clearUpdateDownloadWatchdog();
   setUpdateState({
     status: 'download-progress',
-    percent,
+    percent: Math.max(1, percent),
     transferred: progress.transferred,
     total: progress.total,
     bytesPerSecond: progress.bytesPerSecond,
@@ -648,12 +687,14 @@ autoUpdater.on('download-progress', (progress) => {
 });
 
 autoUpdater.on('update-downloaded', (info) => {
+  clearUpdateDownloadWatchdog();
   console.log(`[tarx] Update downloaded: ${info.version}`);
   setUpdateState({ status: 'downloaded', version: info.version, percent: 100, error: null });
   mainWindow?.webContents.send('tarx:update-ready', { version: info.version });
 });
 
 autoUpdater.on('error', (err) => {
+  clearUpdateDownloadWatchdog();
   setUpdateState({ status: 'error', error: err.message });
   console.log('[tarx] Update error:', err.message);
 });
@@ -668,8 +709,8 @@ ipcMain.handle('tarx:check-for-updates', () => {
   return updateState;
 });
 
-ipcMain.handle('tarx:download-update', () => {
-  downloadUpdate();
+ipcMain.handle('tarx:download-update', async () => {
+  await downloadUpdate();
   return updateState;
 });
 
