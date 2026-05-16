@@ -73,10 +73,11 @@ Not allowed:
 2. Treat browser capture as fallback only.
 3. Do not proceed to full voice loop unless `native_voice_stt_green` is achieved.
 4. Use the exact phrase for the next voice proof: “TARX, what are we working on today?”
-5. Keep Vision route truth visible: report freshness and occlusion honestly.
-6. Keep Computer Use in proposal-only mode.
-7. Use confirmation copy for mutations: “I can do this. Please confirm.”
-8. Never say “I handled it” until `tarx-action-result.v1` is green.
+5. Display/write `TARX`; speak/pronounce it as `TARS`.
+6. Keep Vision route truth visible: report freshness and occlusion honestly.
+7. Keep Computer Use in proposal-only mode.
+8. Use confirmation copy for mutations: “I can do this. Please confirm.”
+9. Never say “I handled it” until `tarx-action-result.v1` is green.
 
 ## Known Failure Modes
 
@@ -117,6 +118,8 @@ Achieve native_voice_stt_green using a real spoken Electron-native capture.
 
 Required phrase:
 “TARX, what are we working on today?”
+
+Spoken pronunciation: the written token `TARX` must be spoken as “TARS, what are we working on today?” for this proof phrase.
 
 Tasks:
 1. Capture a fresh Electron-native WAV with TARX_VOICE_NATIVE_CAPTURE=1.

@@ -37,4 +37,4 @@ Forbidden payload scan: **0 hits**. No Whisper, Gemma, Vision, TTS model payload
 
 ## Next Blocker
 
-Capture a fresh spoken Electron-native WAV of “TARX, what are we working on today?”, submit it to local Whisper, and require a meaningful transcript before continuing the full local voice loop.
+Capture a fresh spoken Electron-native WAV of “TARX, what are we working on today?” (spoken as “TARS, what are we working on today?”), submit it to local Whisper, and require a meaningful transcript before continuing the full local voice loop.

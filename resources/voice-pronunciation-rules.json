@@ -1,0 +1,28 @@
+{
+  "schema": "tarx-voice-pronunciation-rules.v1",
+  "rules": [
+    {
+      "token": "TARX",
+      "display": "TARX",
+      "spoken": "TARS",
+      "phonetic_hint": "tars",
+      "scope": [
+        "tts",
+        "voice_qa",
+        "spoken_scripts",
+        "stt_acceptance"
+      ],
+      "rule": "Always write/display TARX as TARX. Always speak/pronounce TARX as TARS.",
+      "examples": [
+        {
+          "written": "TARX is listening.",
+          "spoken": "TARS is listening."
+        },
+        {
+          "written": "TARX, what are we working on today?",
+          "spoken": "TARS, what are we working on today?"
+        }
+      ]
+    }
+  ]
+}
