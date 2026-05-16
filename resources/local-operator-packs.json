@@ -1,0 +1,49 @@
+{
+  "schema": "tarx-local-operator-packs.v1",
+  "packs": [
+    {
+      "id": "voice-stt-whisper-base-en-int8",
+      "version": "0.1.0",
+      "model_service_name": "Whisper base.en int8 STT",
+      "expected_size": "150-220 MB",
+      "installed_path": "~/.tarx/models/ggml-base.en.bin",
+      "checksum": "pending",
+      "required_ports": [11447],
+      "health_check_url": "http://127.0.0.1:11447/health",
+      "install_status": "missing"
+    },
+    {
+      "id": "voice-tts-kokoro-daniel",
+      "version": "0.1.0",
+      "model_service_name": "Kokoro Daniel TTS",
+      "expected_size": "80-350 MB",
+      "installed_path": "~/.tarx/models/kokoro",
+      "checksum": "pending",
+      "required_ports": [11446],
+      "health_check_url": "http://127.0.0.1:11446/health",
+      "install_status": "missing"
+    },
+    {
+      "id": "context-gemma-worker",
+      "version": "0.1.0",
+      "model_service_name": "Gemma context worker",
+      "expected_size": "2-8 GB",
+      "installed_path": "~/.tarx/models/gemma",
+      "checksum": "pending",
+      "required_ports": [11435],
+      "health_check_url": "http://127.0.0.1:11435/health",
+      "install_status": "missing"
+    },
+    {
+      "id": "vision-observer",
+      "version": "0.1.0",
+      "model_service_name": "TARX Vision observer",
+      "expected_size": "0-4 GB depending on local model tier",
+      "installed_path": "~/.tarx/models/vision",
+      "checksum": "pending",
+      "required_ports": [],
+      "health_check_url": "",
+      "install_status": "missing"
+    }
+  ]
+}

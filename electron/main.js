@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Menu, shell, ipcMain, nativeImage, dialog, clipboard } = require('electron');
+const { app, BrowserWindow, Menu, shell, ipcMain, nativeImage, dialog, clipboard, systemPreferences, screen } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const https = require('https');
@@ -13,8 +13,17 @@ const isDev = process.env.NODE_ENV === 'development';
 // Enable accessibility tree for TARX Vision (AX-based UI automation)
 app.commandLine.appendSwitch('force-renderer-accessibility');
 
-// URLs — primary is tarx.com, fallback is local Bridge
-const PRIMARY_URL = 'https://tarx.com';
+function packagedTarxDesktopUrl() {
+  try {
+    const pkg = require(path.join(app.getAppPath(), 'package.json'));
+    return typeof pkg.tarxDesktopUrl === 'string' && pkg.tarxDesktopUrl ? pkg.tarxDesktopUrl : '';
+  } catch {
+    return '';
+  }
+}
+
+// URLs — default to tarx.com, but allow signed beta/dev apps without shipping Voice to prod.
+const PRIMARY_URL = process.env.TARX_DESKTOP_URL || process.env.TARX_VOICE_BETA_DESKTOP_URL || packagedTarxDesktopUrl() || 'https://tarx.com';
 const FALLBACK_PORTS = [11440, 11441];
 const FALLBACK_URL = 'http://localhost:11440'; // Updated dynamically
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
@@ -23,6 +32,37 @@ const RUNTIME_START_TIMEOUT_MS = 12_000;
 const UPDATE_CHECK_INTERVAL_MS = 60_000;
 const UPDATE_DOWNLOAD_STALL_MS = 20_000;
 const RESPONSIVE_CHROME_BREAKPOINT = 1100;
+const VOICE_NATIVE_CAPTURE_ENABLED = process.env.TARX_VOICE_NATIVE_CAPTURE === '1';
+const VOICE_BROWSER_FALLBACK_ENABLED = process.env.TARX_VOICE_BROWSER_FALLBACK === '1';
+const LOCAL_OPERATOR_FLAGS = {
+  TARX_VOICE_NATIVE_CAPTURE: VOICE_NATIVE_CAPTURE_ENABLED,
+  TARX_VOICE_BROWSER_FALLBACK: VOICE_BROWSER_FALLBACK_ENABLED,
+  TARX_VOICE_LOCAL_PACK: process.env.TARX_VOICE_LOCAL_PACK === '1',
+  TARX_VISION_LOCAL_PACK: process.env.TARX_VISION_LOCAL_PACK === '1',
+  TARX_ACTION_PROPOSALS: process.env.TARX_ACTION_PROPOSALS === '1',
+  TARX_LOCAL_OPERATOR_BETA: process.env.TARX_LOCAL_OPERATOR_BETA === '1',
+  TARX_SUPERCOMPUTER_ESCALATION: process.env.TARX_SUPERCOMPUTER_ESCALATION === '1',
+};
+const VOICE_NATIVE_CAPTURE_DEVICE = process.env.TARX_VOICE_NATIVE_CAPTURE_DEVICE || ':0';
+const VOICE_NATIVE_CAPTURE_SAMPLE_RATE = Number(process.env.TARX_VOICE_NATIVE_CAPTURE_SAMPLE_RATE || 16000);
+const VOICE_NATIVE_CAPTURE_MAX_MS = Number(process.env.TARX_VOICE_NATIVE_CAPTURE_MAX_MS || 15000);
+const VOICE_WHISPER_URL = process.env.TARX_WHISPER_URL || 'http://127.0.0.1:11447';
+const VOICE_UX_STATES = {
+  off: 'Voice off',
+  permissionNeeded: 'Allow microphone access to talk to TARX.',
+  listening: 'TARX is listening',
+  workingLocally: 'TARX is working locally',
+  responding: 'TARX is responding',
+  unavailable: 'Voice unavailable, try fallback',
+};
+const VISION_SAVE_SCREENSHOT = process.env.TARX_VISION_SAVE_SCREENSHOT === '1';
+const VISION_FRESHNESS_POLICY_MS = {
+  passiveDescribe: 5000,
+  uiSuggestion: 2000,
+  actionProposal: 1000,
+  actionExecution: 500,
+};
+const LOCAL_OPERATOR_PACK_MANIFEST = path.join(__dirname, '..', 'resources', 'local-operator-packs.json');
 
 let mainWindow = null;
 let trayManager = null;
@@ -31,6 +71,7 @@ let isOnline = true;
 let pendingDeepLink = null; // Stores deep link if received before window is ready
 let updateState = { status: 'idle', updatedAt: null, version: null, error: null };
 let runtimeState = { status: 'unknown', updatedAt: null, health: null, error: null, pid: null };
+let voiceNativeCaptureState = { active: false, process: null, captureEvent: null, capturePath: null, startedAt: null, updatedAt: null };
 let composerIpcRegistered = false;
 let updateDownloadWatchdog = null;
 let updateDownloadInFlight = null;
@@ -53,6 +94,131 @@ function writeDiagnostic(name, payload) {
   } catch (error) {
     console.log(`[tarx] Failed to write ${name}:`, error.message);
   }
+}
+
+function readLocalOperatorPackManifest() {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(LOCAL_OPERATOR_PACK_MANIFEST, 'utf8'));
+    return Array.isArray(manifest.packs) ? manifest.packs : [];
+  } catch {
+    return [];
+  }
+}
+
+function resolvePackPath(pack) {
+  if (!pack?.installed_path) return '';
+  return String(pack.installed_path).replace(/^~(?=$|\/)/, userHome());
+}
+
+function localOperatorPackStatus(pack) {
+  const installedPath = resolvePackPath(pack);
+  const installed = Boolean(installedPath && fs.existsSync(installedPath));
+  return {
+    id: pack.id,
+    version: pack.version,
+    model_service_name: pack.model_service_name,
+    expected_size: pack.expected_size,
+    installed_path: installedPath,
+    checksum: pack.checksum,
+    required_ports: Array.isArray(pack.required_ports) ? pack.required_ports : [],
+    health_check_url: pack.health_check_url,
+    install_status: installed ? 'installed' : 'missing',
+    installed,
+  };
+}
+
+function requestLocalOperatorJson(url, timeoutMs = 700) {
+  return new Promise((resolve) => {
+    let parsed = null;
+    try {
+      parsed = new URL(url);
+    } catch (error) {
+      resolve({ ok: false, status: 'invalid_url', error: error.message });
+      return;
+    }
+    const client = parsed.protocol === 'https:' ? https : http;
+    const req = client.request(parsed, { method: 'GET', timeout: timeoutMs }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        let json = null;
+        try { json = data ? JSON.parse(data) : null; } catch {}
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json });
+      });
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ ok: false, status: 'timeout' });
+    });
+    req.on('error', (error) => resolve({ ok: false, status: 'error', error: error.message }));
+    req.end();
+  });
+}
+
+async function probeLocalOperatorService(url, timeoutMs = 700) {
+  if (!url) return { ok: false, status: 'missing_url' };
+  try {
+    const result = await requestLocalOperatorJson(url, timeoutMs);
+    return { ok: Boolean(result?.ok), status: result?.status || null, url };
+  } catch (error) {
+    return { ok: false, status: 'probe_failed', url, error: error?.message || String(error) };
+  }
+}
+
+async function localOperatorControlPlaneState() {
+  const packs = readLocalOperatorPackManifest().map(localOperatorPackStatus);
+  const byId = Object.fromEntries(packs.map((pack) => [pack.id, pack]));
+  const bridge = await probeLocalOperatorService('http://127.0.0.1:11440/health');
+  const whisper = await probeLocalOperatorService('http://127.0.0.1:11447/health');
+  const tts = await probeLocalOperatorService('http://127.0.0.1:11446/health');
+  const context = await probeLocalOperatorService('http://127.0.0.1:11435/health');
+  return {
+    ok: true,
+    surface: {
+      name: 'Local Operator',
+      visibility: LOCAL_OPERATOR_FLAGS.TARX_LOCAL_OPERATOR_BETA ? 'internal' : 'hidden',
+      public: false,
+    },
+    flags: { ...LOCAL_OPERATOR_FLAGS },
+    runtimeStatus: {
+      bridge: bridge.ok ? 'reachable' : 'unavailable',
+      native_capture: nativeCaptureStatus().available ? 'available' : 'unavailable',
+      browser_fallback: VOICE_BROWSER_FALLBACK_ENABLED ? 'available_fallback_only' : 'disabled',
+      supercomputer: LOCAL_OPERATOR_FLAGS.TARX_SUPERCOMPUTER_ESCALATION ? 'requires_explicit_approval' : 'off',
+    },
+    services: {
+      bridge,
+      whisper,
+      tts,
+      context,
+    },
+    packs: {
+      all: packs,
+      voice_stt: byId['voice-stt-whisper-base-en-int8']?.install_status || 'missing',
+      voice_tts: byId['voice-tts-kokoro-daniel']?.install_status || 'missing',
+      context: byId['context-gemma-worker']?.install_status || 'missing',
+      vision: byId['vision-observer']?.install_status || 'missing',
+    },
+    controls: {
+      enableVoiceBeta: { visible: LOCAL_OPERATOR_FLAGS.TARX_LOCAL_OPERATOR_BETA, enabled: false, reason: 'blocked_until_native_voice_stt_green' },
+      enableVisionBeta: { visible: LOCAL_OPERATOR_FLAGS.TARX_LOCAL_OPERATOR_BETA, enabled: false, reason: 'vision_freshness_yellow_not_green' },
+      enableActionProposals: { visible: LOCAL_OPERATOR_FLAGS.TARX_LOCAL_OPERATOR_BETA, enabled: LOCAL_OPERATOR_FLAGS.TARX_ACTION_PROPOSALS, execution_enabled: false },
+      installLocalVoicePack: { visible: LOCAL_OPERATOR_FLAGS.TARX_LOCAL_OPERATOR_BETA, enabled: false, reason: 'pack_download_not_enabled' },
+      runLocalOperatorCheck: { visible: LOCAL_OPERATOR_FLAGS.TARX_LOCAL_OPERATOR_BETA, enabled: true },
+    },
+    routeTruth: {
+      computer_default: true,
+      browser_capture_is_fallback: true,
+      supercomputer_default_off: true,
+      autonomous_actions_enabled: false,
+      raw_audio_logged_by_default: false,
+      raw_screenshots_logged_by_default: false,
+      full_transcripts_logged_by_default: false,
+      production_voice_claim: false,
+      daniel_approved: false,
+      vision_green_claim: false,
+    },
+  };
 }
 
 function setUpdateState(next) {
@@ -169,6 +335,217 @@ function requestBridgeJson(pathname, { method = 'GET', body = null, timeoutMs = 
   });
 }
 
+function voiceRuntimeCapabilities() {
+  return {
+    ok: true,
+    featureFlags: {
+      TARX_VOICE_NATIVE_CAPTURE: VOICE_NATIVE_CAPTURE_ENABLED,
+      TARX_VOICE_BROWSER_FALLBACK: VOICE_BROWSER_FALLBACK_ENABLED,
+    },
+    sources: {
+      production: VOICE_NATIVE_CAPTURE_ENABLED ? 'electron_native' : null,
+      fallback: VOICE_BROWSER_FALLBACK_ENABLED ? 'browser_fallback' : null,
+    },
+    routeTruth: {
+      localOnly: true,
+      supercomputerAllowed: false,
+      supercomputerUsed: false,
+      browserCaptureIsFallback: true,
+    },
+    states: VOICE_UX_STATES,
+    nativeCapture: nativeCaptureStatus(),
+    stt: {
+      endpoint: VOICE_WHISPER_URL,
+      contract: 'whisper.cpp /inference multipart',
+      localOnly: true,
+    },
+  };
+}
+
+function createVoiceCaptureEvent({ source, sessionId, captureId, durationMs = 0, sampleRate = 16000 } = {}) {
+  return {
+    schema: 'tarx-voice-capture-event.v1',
+    session_id: String(sessionId || 'rt_electron_local'),
+    capture_id: String(captureId || `vc_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`),
+    source,
+    sample_rate: sampleRate,
+    duration_ms: durationMs,
+    vad: {
+      started_at: new Date().toISOString(),
+      ended_at: new Date().toISOString(),
+      confidence: 0,
+    },
+    privacy: {
+      local_only: true,
+      supercomputer_used: false,
+    },
+  };
+}
+
+function voiceCaptureDir() {
+  const dir = path.join(diagnosticsDir(), 'voice-captures');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function findNativeCaptureBinary() {
+  const candidates = [
+    process.env.TARX_VOICE_NATIVE_CAPTURE_BIN,
+    '/opt/homebrew/bin/ffmpeg',
+    '/usr/local/bin/ffmpeg',
+    'ffmpeg',
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (candidate === 'ffmpeg') return candidate;
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+function nativeCaptureStatus() {
+  return {
+    adapter: 'ffmpeg-avfoundation',
+    available: Boolean(findNativeCaptureBinary()),
+    binary: findNativeCaptureBinary(),
+    device: VOICE_NATIVE_CAPTURE_DEVICE,
+    sampleRate: VOICE_NATIVE_CAPTURE_SAMPLE_RATE,
+    maxMs: VOICE_NATIVE_CAPTURE_MAX_MS,
+  };
+}
+
+function nativeCaptureArgs(capturePath) {
+  return [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-y',
+    '-f', 'avfoundation',
+    '-i', VOICE_NATIVE_CAPTURE_DEVICE,
+    '-ac', '1',
+    '-ar', String(VOICE_NATIVE_CAPTURE_SAMPLE_RATE),
+    '-f', 'wav',
+    capturePath,
+  ];
+}
+
+function startNativeCaptureProcess(captureEvent) {
+  const binary = findNativeCaptureBinary();
+  if (!binary) throw new Error('native_capture_binary_missing');
+  const capturePath = path.join(voiceCaptureDir(), `${captureEvent.capture_id}.wav`);
+  const args = nativeCaptureArgs(capturePath);
+  const child = spawn(binary, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+  let stderr = '';
+  child.stderr?.on('data', (chunk) => {
+    stderr += String(chunk);
+    if (stderr.length > 4000) stderr = stderr.slice(-4000);
+  });
+  child.on('error', (error) => {
+    voiceNativeCaptureState.error = error.message;
+  });
+  const timeout = setTimeout(() => {
+    if (!child.killed) child.kill('SIGINT');
+  }, VOICE_NATIVE_CAPTURE_MAX_MS);
+  return { process: child, capturePath, startedAt: Date.now(), stderr: () => stderr, timeout };
+}
+
+function stopNativeCaptureProcess() {
+  const active = voiceNativeCaptureState;
+  const child = active.process;
+  if (!child) return Promise.resolve({ exitCode: null, signal: null });
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (exitCode, signal) => {
+      if (settled) return;
+      settled = true;
+      if (active.timeout) clearTimeout(active.timeout);
+      resolve({ exitCode, signal });
+    };
+    child.once('close', done);
+    if (!child.killed) child.kill('SIGINT');
+    setTimeout(() => {
+      if (!settled && !child.killed) child.kill('SIGKILL');
+      done(null, 'SIGKILL_TIMEOUT');
+    }, 2500);
+  });
+}
+
+async function emitVoiceCaptureEventToBridge(event) {
+  return requestBridgeJson('/v1/runtime/voice/capture-events', {
+    method: 'POST',
+    body: event,
+    timeoutMs: 2500,
+  });
+}
+
+async function emitSttResultToBridge(result) {
+  return requestBridgeJson('/v1/runtime/stt-results', {
+    method: 'POST',
+    body: result,
+    timeoutMs: 2500,
+  });
+}
+
+function extractWhisperTranscript(payload, fallbackText = '') {
+  return String(
+    payload?.text ||
+    payload?.transcript ||
+    payload?.result?.text ||
+    payload?.segments?.map?.((segment) => segment.text).join(' ') ||
+    fallbackText ||
+    ''
+  ).trim();
+}
+
+async function transcribeNativeCaptureFile(captureEvent, capturePath) {
+  if (!capturePath || !fs.existsSync(capturePath)) {
+    return { ok: false, error: 'capture_file_missing', transcript: '', audioBytes: 0 };
+  }
+  const started = Date.now();
+  const audio = fs.readFileSync(capturePath);
+  const form = new FormData();
+  form.append('file', new Blob([audio], { type: 'audio/wav' }), path.basename(capturePath));
+  form.append('temperature', '0.0');
+  form.append('response_format', 'json');
+  const endpoint = `${VOICE_WHISPER_URL.replace(/\/$/, '')}/inference`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    body: form,
+    signal: AbortSignal.timeout(Number(process.env.TARX_WHISPER_TIMEOUT || 30000)),
+  });
+  const text = await response.text();
+  let json = null;
+  try { json = JSON.parse(text); } catch {}
+  const transcript = extractWhisperTranscript(json, text);
+  const sttResult = {
+    schema: 'tarx-stt-result.v1',
+    session_id: captureEvent.session_id,
+    capture_id: captureEvent.capture_id,
+    transcript_id: `stt_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+    model: 'whisper-base.en-int8',
+    text: transcript,
+    confidence: transcript && !/^\[BLANK_AUDIO\]$/i.test(transcript) ? 0.8 : 0,
+    latency_ms: Date.now() - started,
+    local_only: true,
+    evidence: {
+      audio_ref: capturePath,
+      audio_bytes: audio.length,
+      raw_audio_logged: false,
+      endpoint,
+    },
+  };
+  const bridge = transcript ? await emitSttResultToBridge(sttResult) : null;
+  return {
+    ok: response.ok && Boolean(transcript),
+    status: response.status,
+    transcript,
+    blankAudio: /^\[BLANK_AUDIO\]$/i.test(transcript),
+    raw: json || text.slice(0, 500),
+    sttResult,
+    bridge,
+  };
+}
+
 async function waitForRuntime(timeoutMs = RUNTIME_START_TIMEOUT_MS) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -233,7 +610,7 @@ if (process.defaultApp) {
 }
 
 // ── App single-instance lock ─────────────────────────────────────────────────
-const gotLock = app.requestSingleInstanceLock();
+const gotLock = process.env.TARX_ALLOW_PARALLEL_ELECTRON_SMOKE === '1' ? true : app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
   process.exit(0);
@@ -418,7 +795,11 @@ function handleLoadFailure() {
 
 function probe(url, secure, timeoutMs = 5000) {
   return new Promise((resolve) => {
-    const mod = secure ? https : http;
+    let mod = secure ? https : http;
+    try {
+      const parsed = new URL(url);
+      mod = parsed.protocol === 'http:' ? http : https;
+    } catch {}
     const req = mod.get(url, { timeout: timeoutMs }, (res) => {
       resolve(res.statusCode < 500);
       res.resume();
@@ -511,6 +892,286 @@ function openComposerWindow() {
   composerWindow.on('blur', () => {
     // Don't auto-close on blur — user might be copying text
   });
+}
+
+
+function targetWindowForVisionAction() {
+  if (composerWindow && !composerWindow.isDestroyed() && composerWindow.isFocused()) return composerWindow;
+  const focused = BrowserWindow.getFocusedWindow();
+  if (focused && !focused.isDestroyed()) return focused;
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+  if (composerWindow && !composerWindow.isDestroyed()) return composerWindow;
+  return null;
+}
+
+function visionEvidenceDir() {
+  const dir = path.join(diagnosticsDir(), 'vision-observations');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function boundsToPlain(bounds = {}) {
+  return {
+    x: Math.round(Number(bounds.x || 0)),
+    y: Math.round(Number(bounds.y || 0)),
+    width: Math.round(Number(bounds.width || 0)),
+    height: Math.round(Number(bounds.height || 0)),
+  };
+}
+
+function rectArea(rect) {
+  return Math.max(0, rect.width) * Math.max(0, rect.height);
+}
+
+function rectIntersectionArea(a, b) {
+  const left = Math.max(a.x, b.x);
+  const top = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  return Math.max(0, right - left) * Math.max(0, bottom - top);
+}
+
+function inferSensitiveFlags(text = '') {
+  const value = String(text || '');
+  const flags = new Set();
+  if (/\b(api[_-]?key|password|passwd|secret|token|private[_ -]?key|bearer\s+[a-z0-9._-]+|sk-[a-z0-9]{12,}|xox[baprs]-[a-z0-9-]+|ghp_[a-z0-9]{20,}|akia[0-9a-z]{16})\b/i.test(value)) {
+    flags.add('credential_like');
+  }
+  if (/\b(card number|cvv|routing number|account number|invoice|payment|billing)\b/i.test(value)) flags.add('payment');
+  if (/\b(ssn|social security|passport|dob|date of birth|home address)\b/i.test(value)) flags.add('personal');
+  return flags.size ? Array.from(flags) : ['none'];
+}
+
+function classifyWindowOcclusion(windowRef) {
+  if (!windowRef || windowRef.isDestroyed()) return { status: 'blocked', confidence: 0, reasons: ['no_window_available'] };
+  if (!windowRef.isVisible() || windowRef.isMinimized()) return { status: 'blocked', confidence: 0.05, reasons: ['window_not_visible'] };
+
+  const bounds = boundsToPlain(windowRef.getBounds());
+  const targetArea = rectArea(bounds);
+  if (targetArea <= 0) return { status: 'blocked', confidence: 0.05, reasons: ['invalid_window_bounds'] };
+
+  const display = screen.getDisplayMatching(bounds);
+  const workArea = boundsToPlain(display?.workArea || display?.bounds || {});
+  const visibleArea = rectIntersectionArea(bounds, workArea);
+  const visibleRatio = targetArea ? visibleArea / targetArea : 0;
+  const reasons = [];
+  if (visibleRatio <= 0.05) return { status: 'blocked', confidence: 0.1, reasons: ['window_outside_display'] };
+  if (visibleRatio < 0.95) reasons.push('window_partially_offscreen');
+
+  let internalOverlapRatio = 0;
+  for (const other of BrowserWindow.getAllWindows()) {
+    if (other === windowRef || other.isDestroyed() || !other.isVisible() || other.isMinimized()) continue;
+    const otherBounds = boundsToPlain(other.getBounds());
+    const overlap = rectIntersectionArea(bounds, otherBounds) / targetArea;
+    if (overlap > internalOverlapRatio) internalOverlapRatio = overlap;
+  }
+  if (internalOverlapRatio > 0.05) reasons.push('overlapped_by_electron_window');
+
+  if (internalOverlapRatio >= 0.8) return { status: 'blocked', confidence: 0.2, reasons, internalOverlapRatio };
+  if (internalOverlapRatio > 0.05 || visibleRatio < 0.95) {
+    return { status: 'partial', confidence: 0.65, reasons, internalOverlapRatio, visibleRatio };
+  }
+
+  // Electron cannot prove occlusion from unrelated macOS apps without a deeper AX/WindowServer pass.
+  return { status: 'clear', confidence: 0.78, reasons: ['electron_window_clear_external_occlusion_unverified'], visibleRatio };
+}
+
+function evaluateVisionFreshnessPolicy(observation) {
+  const freshness = Number(observation?.freshness_ms);
+  const blocked = observation?.occlusion_status === 'blocked';
+  return {
+    passive_describe_allowed: Number.isFinite(freshness) && freshness <= VISION_FRESHNESS_POLICY_MS.passiveDescribe,
+    ui_suggestion_allowed: Number.isFinite(freshness) && freshness <= VISION_FRESHNESS_POLICY_MS.uiSuggestion && !blocked,
+    action_proposal_allowed: Number.isFinite(freshness) && freshness <= VISION_FRESHNESS_POLICY_MS.actionProposal && !blocked,
+    action_execution_allowed: false,
+    action_execution_blocked_reason: blocked
+      ? 'occlusion_blocked'
+      : (Number.isFinite(freshness) && freshness <= VISION_FRESHNESS_POLICY_MS.actionExecution ? 'execution_disabled_internal_beta' : 'freshness_over_500ms'),
+    thresholds_ms: VISION_FRESHNESS_POLICY_MS,
+  };
+}
+
+async function getRendererSurface(windowRef) {
+  if (!windowRef || windowRef.isDestroyed()) return { url: '', title: '', visibleText: '', actions: [] };
+  try {
+    return await windowRef.webContents.executeJavaScript(`(() => {
+      const text = String(document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 8000);
+      const actions = Array.isArray(window.__tarxActionManifest?.actions) ? window.__tarxActionManifest.actions : [];
+      return { url: location.href, title: document.title, visibleText: text, actions: actions.slice(0, 24) };
+    })()`, true);
+  } catch (error) {
+    return { url: windowRef.webContents.getURL(), title: '', visibleText: '', actions: [], error: error.message };
+  }
+}
+
+async function observeVisionSurface(reason = 'manual') {
+  const windowRef = targetWindowForVisionAction();
+  const id = `vision-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const capturedAtMs = Date.now();
+  const capturedAt = new Date(capturedAtMs).toISOString();
+  if (!windowRef) {
+    return {
+      ok: false,
+      schema: 'tarx-vision-observation.v1',
+      version: 'tarx-vision-observation.v1',
+      session_id: 'rt_electron_local',
+      observation_id: id,
+      id,
+      source: 'active_window',
+      captured_at: capturedAt,
+      freshness_ms: 0,
+      occlusion_status: 'blocked',
+      target_confidence: 0,
+      sensitive_flags: ['unknown'],
+      local_only: true,
+      error: 'no_window_available',
+      createdAt: capturedAt,
+    };
+  }
+  const surface = await getRendererSurface(windowRef);
+  let screenshotPath = null;
+  let screenshotError = null;
+  try {
+    if (VISION_SAVE_SCREENSHOT) {
+      const image = await windowRef.webContents.capturePage();
+      screenshotPath = path.join(visionEvidenceDir(), `${id}.png`);
+      fs.writeFileSync(screenshotPath, image.toPNG());
+    }
+  } catch (error) {
+    screenshotError = error.message;
+    surface.screenshotError = error.message;
+  }
+  const bounds = boundsToPlain(windowRef.getBounds());
+  const occlusion = classifyWindowOcclusion(windowRef);
+  const freshnessMs = Date.now() - capturedAtMs;
+  const visibleText = String(surface.visibleText || '').slice(0, 8000);
+  const observation = {
+    ok: true,
+    schema: 'tarx-vision-observation.v1',
+    version: 'tarx-vision-observation.v1',
+    session_id: 'rt_electron_local',
+    observation_id: id,
+    id,
+    source: 'active_window',
+    captured_at: capturedAt,
+    freshness_ms: freshnessMs,
+    window: {
+      app: 'TARX Electron',
+      title: surface.title || windowRef.getTitle() || '',
+      bounds,
+      focused: windowRef.isFocused(),
+      visible: windowRef.isVisible(),
+      minimized: windowRef.isMinimized(),
+    },
+    occlusion_status: occlusion.status,
+    target_confidence: occlusion.confidence,
+    sensitive_flags: inferSensitiveFlags(visibleText),
+    local_only: true,
+    capture_policy: {
+      raw_screenshot_logged_by_default: false,
+      screenshot_saved: Boolean(screenshotPath),
+      save_screenshot_requires_env: 'TARX_VISION_SAVE_SCREENSHOT=1',
+    },
+    freshness_policy: null,
+    producer: { name: 'tarx-electron', capture: 'live', reason },
+    surface: {
+      kind: surface.url?.includes('/chat') ? 'chat' : 'unknown',
+      url: surface.url || windowRef.webContents.getURL(),
+      title: surface.title || '',
+      visibleText,
+      actionCount: Array.isArray(surface.actions) ? surface.actions.length : 0,
+    },
+    evidence: { screenshotPath, screenshotOk: Boolean(screenshotPath), screenshotSaved: Boolean(screenshotPath), screenshotError },
+    occlusion,
+    actionManifest: Array.isArray(surface.actions) ? surface.actions : [],
+    createdAt: capturedAt,
+  };
+  observation.freshness_policy = evaluateVisionFreshnessPolicy(observation);
+  writeDiagnostic('latest-vision-observation.json', observation);
+  return observation;
+}
+
+function inferActionIntentMode(prompt) {
+  const text = String(prompt || '').toLowerCase();
+  if (/\b(click|open|create|send|submit|type|press|run|execute|delete|move|rename|archive|complete|schedule)\b/.test(text)) return 'action_requested';
+  if (/\b(what am i looking at|what do you see|describe|summarize the screen|read this screen)\b/.test(text)) return 'describe_only';
+  return 'describe_with_followup_option';
+}
+
+function inferActionRisk(payload = {}, intentMode = 'describe_only') {
+  const text = String(payload.prompt || payload.intent || payload.action || payload.target || '').toLowerCase();
+  const type = String(payload.type || payload.actionType || '').toLowerCase();
+  const mutation = intentMode === 'action_requested';
+  const externalSideEffect = /\b(send|email|sms|post|purchase|buy|delete|terminal|command|run|deploy|transfer|payment)\b/.test(text);
+  const highRisk = externalSideEffect || ['send_message', 'run_command', 'delete', 'purchase', 'modify_setting', 'external_tool'].includes(type);
+  const blocked = /\b(password|api key|private key|credential|wire transfer|bank transfer)\b/.test(text);
+  const level = blocked ? 'blocked' : (highRisk ? 'high' : (mutation ? 'medium' : 'read_only'));
+  return {
+    level,
+    mutation,
+    external_side_effect: externalSideEffect,
+    requires_confirmation: level === 'medium' || level === 'high' || level === 'blocked',
+    high_risk_confirmation_required: level === 'high',
+    reason: blocked
+      ? 'Blocked risk cannot execute.'
+      : (mutation ? 'Mutation requires confirmation and fresh target proof.' : 'Read-only action proposal.'),
+  };
+}
+
+async function proposeUiAction(payload = {}) {
+  const observation = await observeVisionSurface('action-proposal');
+  const intentMode = inferActionIntentMode(payload.prompt || payload.intent || payload.action);
+  const policy = observation.freshness_policy || evaluateVisionFreshnessPolicy(observation);
+  const risk = inferActionRisk(payload, intentMode);
+  const bounds = observation.window?.bounds || {};
+  const targetFreshnessMs = Number(observation.freshness_ms ?? 9999);
+  const targetConfidence = Number(observation.target_confidence ?? 0);
+  const canPropose = intentMode === 'action_requested' && policy.action_proposal_allowed && risk.level !== 'blocked';
+  const grounding = {
+    ok: canPropose,
+    schema: 'tarx-action-grounding.v1',
+    version: 'tarx-action-grounding.v1',
+    groundingId: `grounding-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    session_id: observation.session_id || 'rt_electron_local',
+    action_id: String(payload.actionId || payload.action || 'ui_action_proposal'),
+    intent_id: String(payload.intentId || `intent-${Date.now()}`),
+    actionId: String(payload.actionId || payload.action || 'ui_action_proposal'),
+    intentMode,
+    proposed_action: {
+      type: String(payload.type || payload.actionType || 'click'),
+      target: String(payload.target || payload.prompt || ''),
+      parameters: payload.parameters && typeof payload.parameters === 'object' ? payload.parameters : {},
+      expected_result: String(payload.expectedResult || payload.expected_result || ''),
+    },
+    grounding: {
+      vision_observation_id: observation.observation_id || observation.id,
+      target_freshness_ms: targetFreshnessMs,
+      target_confidence: targetConfidence,
+      target_bounds: bounds,
+      occlusion_status: observation.occlusion_status || 'unknown',
+    },
+    risk,
+    status: 'proposed',
+    ux_copy: {
+      confirmation: risk.requires_confirmation ? 'I can do this. Please confirm.' : '',
+      completion_guard: 'Do not say "I handled it" until tarx-action-result.v1 is green.',
+    },
+    executionPlane: 'computer_local',
+    executor: 'electron-native',
+    requiresConfirmation: risk.requires_confirmation,
+    executionBlocked: true,
+    blockedReason: intentMode === 'action_requested'
+      ? (risk.level === 'blocked' ? 'blocked_risk' : (policy.action_proposal_allowed ? 'confirmation_required_execution_disabled' : policy.action_execution_blocked_reason))
+      : 'describe_only_forbids_side_effects',
+    freshnessPolicy: policy,
+    target: payload.target || null,
+    observationId: observation.id,
+    beforeEvidence: observation.evidence?.screenshotPath || null,
+    availableActions: observation.actionManifest || [],
+    createdAt: new Date().toISOString(),
+  };
+  writeDiagnostic('latest-action-grounding.json', grounding);
+  return grounding;
 }
 
 // ── Periodic health check ────────────────────────────────────────────────────
@@ -718,6 +1379,228 @@ ipcMain.handle('tarx:copy-text', (_event, value) => {
   clipboard.writeText(String(value || ''));
   return true;
 });
+
+ipcMain.handle('tarx:vision-observe', async (_event, payload) => {
+  return observeVisionSurface(payload?.reason || 'manual');
+});
+
+ipcMain.handle('tarx:action-propose', async (_event, payload) => {
+  return proposeUiAction(payload || {});
+});
+
+
+ipcMain.handle('tarx:voice-permission-status', () => getVoicePermissionStatus());
+
+ipcMain.handle('tarx:voice-request-permission', async () => requestVoicePermission());
+
+ipcMain.handle('tarx:voice-runtime-capabilities', () => voiceRuntimeCapabilities());
+
+ipcMain.handle('tarx:local-operator-control-plane', async () => localOperatorControlPlaneState());
+
+ipcMain.handle('tarx:voice-native-capture-start', async (_event, payload = {}) => {
+  if (!VOICE_NATIVE_CAPTURE_ENABLED) {
+    return {
+      ok: false,
+      state: 'unavailable',
+      label: VOICE_UX_STATES.unavailable,
+      source: 'electron_native',
+      fallbackAvailable: VOICE_BROWSER_FALLBACK_ENABLED,
+      routeTruth: voiceRuntimeCapabilities().routeTruth,
+      reason: 'TARX_VOICE_NATIVE_CAPTURE_disabled',
+    };
+  }
+  if (voiceNativeCaptureState.active) {
+    return {
+      ok: true,
+      state: 'listening',
+      label: VOICE_UX_STATES.listening,
+      source: 'electron_native',
+      captureEvent: voiceNativeCaptureState.captureEvent,
+      capture: { localPath: voiceNativeCaptureState.capturePath, active: true },
+      routeTruth: voiceRuntimeCapabilities().routeTruth,
+    };
+  }
+  const nativeStatus = nativeCaptureStatus();
+  if (!nativeStatus.available) {
+    return {
+      ok: false,
+      state: 'unavailable',
+      label: VOICE_UX_STATES.unavailable,
+      source: 'electron_native',
+      nativeCapture: nativeStatus,
+      fallbackAvailable: VOICE_BROWSER_FALLBACK_ENABLED,
+      routeTruth: voiceRuntimeCapabilities().routeTruth,
+      reason: 'ffmpeg_avfoundation_unavailable',
+    };
+  }
+  const permission = await requestVoicePermission();
+  if (permission?.status && permission.status !== 'granted' && permission.granted !== true) {
+    return {
+      ok: false,
+      state: 'permission_needed',
+      label: VOICE_UX_STATES.permissionNeeded,
+      source: 'electron_native',
+      permission,
+      routeTruth: voiceRuntimeCapabilities().routeTruth,
+    };
+  }
+  const captureEvent = createVoiceCaptureEvent({
+    source: 'electron_native',
+    sessionId: payload.session_id,
+    sampleRate: payload.sample_rate || VOICE_NATIVE_CAPTURE_SAMPLE_RATE,
+  });
+  let started;
+  try {
+    started = startNativeCaptureProcess(captureEvent);
+  } catch (error) {
+    return {
+      ok: false,
+      state: 'unavailable',
+      label: VOICE_UX_STATES.unavailable,
+      source: 'electron_native',
+      nativeCapture: nativeStatus,
+      routeTruth: voiceRuntimeCapabilities().routeTruth,
+      error: error.message,
+    };
+  }
+  const captureStartedEvent = {
+    ...captureEvent,
+    duration_ms: 0,
+    evidence: {
+      audio_ref: started.capturePath,
+      raw_audio_logged: false,
+      adapter: nativeStatus.adapter,
+    },
+  };
+  const bridge = await emitVoiceCaptureEventToBridge(captureStartedEvent);
+  voiceNativeCaptureState = {
+    active: true,
+    process: started.process,
+    captureEvent,
+    capturePath: started.capturePath,
+    startedAt: started.startedAt,
+    updatedAt: new Date().toISOString(),
+    stderr: started.stderr,
+    timeout: started.timeout,
+  };
+  writeDiagnostic('latest-native-voice-capture.json', {
+    state: 'listening',
+    source: 'electron_native',
+    captureEvent: captureStartedEvent,
+    capture: { localPath: started.capturePath, active: true },
+    nativeCapture: nativeStatus,
+    bridge,
+    routeTruth: voiceRuntimeCapabilities().routeTruth,
+  });
+  return {
+    ok: bridge.ok,
+    state: 'listening',
+    label: VOICE_UX_STATES.listening,
+    source: 'electron_native',
+    captureEvent: captureStartedEvent,
+    capture: { localPath: started.capturePath, active: true },
+    bridge,
+    nativeCapture: nativeStatus,
+    routeTruth: voiceRuntimeCapabilities().routeTruth,
+  };
+});
+
+ipcMain.handle('tarx:voice-native-capture-stop', async () => {
+  const stopped = await stopNativeCaptureProcess();
+  const capturePath = voiceNativeCaptureState.capturePath;
+  const bytes = capturePath && fs.existsSync(capturePath) ? fs.statSync(capturePath).size : 0;
+  const durationMs = voiceNativeCaptureState.startedAt ? Math.max(1, Date.now() - voiceNativeCaptureState.startedAt) : 0;
+  const captureEvent = voiceNativeCaptureState.captureEvent
+    ? {
+        ...voiceNativeCaptureState.captureEvent,
+        duration_ms: durationMs,
+        vad: {
+          ...voiceNativeCaptureState.captureEvent.vad,
+          ended_at: new Date().toISOString(),
+          confidence: bytes > 1000 ? 0.8 : 0,
+        },
+        evidence: {
+          audio_ref: capturePath,
+          audio_bytes: bytes,
+          raw_audio_logged: false,
+          adapter: 'ffmpeg-avfoundation',
+        },
+      }
+    : null;
+  const bridge = captureEvent ? await emitVoiceCaptureEventToBridge(captureEvent) : null;
+  const stt = captureEvent && bytes > 1000 && process.env.TARX_VOICE_NATIVE_CAPTURE_TRANSCRIBE !== '0'
+    ? await transcribeNativeCaptureFile(captureEvent, capturePath).catch((error) => ({ ok: false, error: error.message }))
+    : null;
+  const diagnostic = {
+    state: 'off',
+    source: 'electron_native',
+    captureEvent,
+    capture: { localPath: capturePath, audioBytes: bytes, active: false, stopped },
+    bridge,
+    stt,
+    routeTruth: voiceRuntimeCapabilities().routeTruth,
+  };
+  writeDiagnostic('latest-native-voice-capture.json', diagnostic);
+  voiceNativeCaptureState = { active: false, process: null, captureEvent: null, capturePath: null, startedAt: null, updatedAt: new Date().toISOString() };
+  return {
+    ok: Boolean(captureEvent && bytes > 0 && (!bridge || bridge.ok)),
+    state: 'off',
+    label: VOICE_UX_STATES.off,
+    source: 'electron_native',
+    captureEvent,
+    capture: { localPath: capturePath, audioBytes: bytes, active: false, stopped },
+    bridge,
+    stt,
+    routeTruth: voiceRuntimeCapabilities().routeTruth,
+  };
+});
+
+ipcMain.handle('tarx:voice-capture-event', async (_event, payload = {}) => {
+  const source = payload.source === 'electron_native' ? 'electron_native' : 'browser_fallback';
+  const captureEvent = {
+    ...createVoiceCaptureEvent({
+      source,
+      sessionId: payload.session_id,
+      captureId: payload.capture_id,
+      durationMs: payload.duration_ms,
+      sampleRate: payload.sample_rate,
+    }),
+    vad: payload.vad || createVoiceCaptureEvent({ source }).vad,
+  };
+  const bridge = await emitVoiceCaptureEventToBridge(captureEvent);
+  return {
+    ok: bridge.ok,
+    source,
+    captureEvent,
+    bridge,
+    routeTruth: voiceRuntimeCapabilities().routeTruth,
+  };
+});
+
+
+
+function getVoicePermissionStatus() {
+  if (process.platform !== 'darwin' || !systemPreferences?.getMediaAccessStatus) {
+    return { platform: process.platform, status: 'unknown', canAsk: false };
+  }
+  return {
+    platform: process.platform,
+    status: systemPreferences.getMediaAccessStatus('microphone'),
+    canAsk: typeof systemPreferences.askForMediaAccess === 'function',
+  };
+}
+
+async function requestVoicePermission() {
+  const before = getVoicePermissionStatus();
+  if (process.platform !== 'darwin' || !systemPreferences?.askForMediaAccess) return before;
+  if (before.status === 'granted') return before;
+  try {
+    const granted = await systemPreferences.askForMediaAccess('microphone');
+    return { ...getVoicePermissionStatus(), granted };
+  } catch (error) {
+    return { ...getVoicePermissionStatus(), granted: false, error: error.message };
+  }
+}
 
 // ── Deep link handler (tarx://auth/callback?token=...) ───────────────────────
 // macOS: open-url fires when user clicks a tarx:// link (e.g., magic link email)

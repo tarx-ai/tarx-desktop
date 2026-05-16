@@ -1,0 +1,64 @@
+appId: com.tarxan.tarx.voicebeta
+productName: TARX Voice Beta
+artifactName: ${productName}-${version}-${arch}.${ext}
+directories:
+  output: dist-voice-beta
+files:
+  - electron/**
+  - assets/**
+  - resources/local-operator-packs.json
+  - package.json
+  - node_modules/**
+  - '!**/.tarx/**'
+  - '!**/runs/**'
+  - '!**/diagnostics/**'
+  - '!**/voice-captures/**'
+  - '!**/vision-observations/**'
+  - '!**/models/**'
+  - '!**/*.gguf'
+  - '!**/*.ggml'
+  - '!**/*.onnx'
+  - '!**/*.safetensors'
+  - '!**/*.pt'
+  - '!**/*.pth'
+  - '!**/*.ckpt'
+  - '!**/*.tflite'
+  - '!**/*.wav'
+  - '!**/*.webm'
+  - '!**/*.flac'
+  - '!**/*.mp3'
+  - '!**/*.jsonl'
+asar: true
+mac:
+  category: public.app-category.productivity
+  icon: assets/icon.icns
+  hardenedRuntime: true
+  identity: John Wantz (JH4243GARF)
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: TARX Voice Beta uses the microphone for local voice input so you can speak instead of type.
+    NSSpeechRecognitionUsageDescription: TARX Voice Beta may use speech recognition only when you turn voice on.
+    NSCameraUsageDescription: TARX Vision may use camera or screen context only when explicitly enabled.
+extraMetadata:
+  name: tarx-voice-beta-desktop
+  productName: TARX Voice Beta
+  tarxDesktopUrl: http://localhost:5173
+  tarxVoiceVisionActionBeta: true
+dmg:
+  title: TARX Voice Beta
+  background: assets/dmg-background.png
+  iconSize: 96
+  window:
+    width: 640
+    height: 420
+  contents:
+    - x: 170
+      y: 230
+      type: file
+    - x: 470
+      y: 230
+      type: link
+      path: /Applications
+publish: null
+afterSign: ./scripts/notarize.js

@@ -1,0 +1,67 @@
+name: TARX Voice Beta Electron
+
+on:
+  workflow_dispatch:
+    inputs:
+      beta_url:
+        description: Beta web/runtime URL baked into TARX Voice Beta.app
+        required: true
+        default: http://localhost:3000
+      notarize:
+        description: Notarize signed artifact
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos-voice-beta:
+    name: Build signed TARX Voice Beta for macOS
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      TARX_VOICE_BETA_DESKTOP_URL: ${{ inputs.beta_url }}
+      APPLE_SKIP_NOTARIZE: ${{ inputs.notarize && '0' || '1' }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      CSC_LINK: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+      CSC_KEY_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit Voice Beta package contract
+        run: npm run qa:voice-beta-package-contract
+
+      - name: Build signed Voice Beta app
+        run: npm run build:voice-beta
+
+      - name: Verify app signature
+        run: |
+          APP_PATH="dist-voice-beta/mac-arm64/TARX Voice Beta.app"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          codesign -dv --verbose=4 "$APP_PATH"
+
+      - name: Upload Voice Beta artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarx-voice-beta-macos
+          path: |
+            dist-voice-beta/*.dmg
+            dist-voice-beta/*-mac.zip
+            dist-voice-beta/latest-mac.yml
+            dist-voice-beta/builder-effective-config.yaml
+            dist-voice-beta-proof/latest-package-contract.json
+          if-no-files-found: error
