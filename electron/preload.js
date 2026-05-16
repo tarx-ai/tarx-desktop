@@ -149,6 +149,8 @@ function createTarxVoiceBridge() {
     emitCaptureEvent: async (payload) => ipcRenderer.invoke('tarx:voice-capture-event', payload || {}),
     permissionStatus: async () => ipcRenderer.invoke('tarx:voice-permission-status'),
     requestPermission: async () => ipcRenderer.invoke('tarx:voice-request-permission'),
+    openInputSettings: async () => ipcRenderer.invoke('tarx:voice-open-input-settings'),
+    openMicrophonePrivacySettings: async () => ipcRenderer.invoke('tarx:voice-open-microphone-privacy-settings'),
     listInputDevices: async () => {
       if (!navigator.mediaDevices?.enumerateDevices) return [];
       const devices = await navigator.mediaDevices.enumerateDevices();

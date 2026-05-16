@@ -22,6 +22,11 @@ record('browser_fallback.source_label_browser_fallback', main.includes("source =
 record('native_capture.bridge_event_endpoint', main.includes("'/v1/runtime/voice/capture-events'"), 'Bridge voice capture endpoint');
 record('native_capture.no_silent_supercomputer', main.includes('supercomputerAllowed: false') && main.includes('supercomputerUsed: false') && main.includes('supercomputer_used: false'), 'supercomputer defaults off');
 record('native_capture.real_byte_adapter_declared', main.includes("adapter: 'ffmpeg-avfoundation'") && main.includes("'-f', 'avfoundation'"), 'ffmpeg AVFoundation adapter');
+record('native_capture.uses_macos_default_input_discovery', main.includes('macDefaultInputDevice') && main.includes('resolveNativeCaptureDevice') && main.includes('macos_default_input'), 'system default input discovery');
+record('native_capture.exposes_available_input_devices', main.includes('availableInputDevices') && main.includes('selectedDevice'), 'available/default device metadata');
+record('native_capture.detects_silent_or_disconnected_input', main.includes('readWavAudioStats') && main.includes('silent_or_disconnected') && main.includes('inputStatus'), 'silent input detection');
+record('native_capture.opens_system_settings', main.includes('tarx:voice-open-input-settings') && preload.includes('openInputSettings'), 'Sound input settings affordance');
+record('native_capture.opens_microphone_privacy_settings', main.includes('tarx:voice-open-microphone-privacy-settings') && preload.includes('openMicrophonePrivacySettings'), 'Microphone privacy settings affordance');
 record('native_capture.audio_file_reference_only', main.includes('audio_ref') && main.includes('raw_audio_logged: false') && !main.includes('rawAudio'), 'audio ref without raw telemetry');
 record('native_capture.stop_kills_process_and_stats_bytes', main.includes('stopNativeCaptureProcess') && main.includes('fs.statSync(capturePath).size'), 'stop and byte proof');
 record('native_capture.preload_stop_routes_native', preload.includes("activeSource === 'electron_native'") && preload.includes('tarx:voice-native-capture-stop'), 'native stop path');

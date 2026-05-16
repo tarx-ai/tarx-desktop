@@ -6,7 +6,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -43,7 +43,9 @@ const LOCAL_OPERATOR_FLAGS = {
   TARX_LOCAL_OPERATOR_BETA: process.env.TARX_LOCAL_OPERATOR_BETA === '1',
   TARX_SUPERCOMPUTER_ESCALATION: process.env.TARX_SUPERCOMPUTER_ESCALATION === '1',
 };
-const VOICE_NATIVE_CAPTURE_DEVICE = process.env.TARX_VOICE_NATIVE_CAPTURE_DEVICE || ':0';
+const VOICE_NATIVE_CAPTURE_DEVICE = process.env.TARX_VOICE_NATIVE_CAPTURE_DEVICE || '';
+const MAC_SOUND_INPUT_SETTINGS_URL = 'x-apple.systempreferences:com.apple.Sound-Settings.extension?input';
+const MAC_MICROPHONE_PRIVACY_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone';
 const VOICE_NATIVE_CAPTURE_SAMPLE_RATE = Number(process.env.TARX_VOICE_NATIVE_CAPTURE_SAMPLE_RATE || 16000);
 const VOICE_NATIVE_CAPTURE_MAX_MS = Number(process.env.TARX_VOICE_NATIVE_CAPTURE_MAX_MS || 15000);
 const VOICE_WHISPER_URL = process.env.TARX_WHISPER_URL || 'http://127.0.0.1:11447';
@@ -404,24 +406,113 @@ function findNativeCaptureBinary() {
   return null;
 }
 
+function safeExecFile(command, args, timeout = 4000) {
+  try {
+    return execFileSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
+  } catch (error) {
+    return `${error.stdout || ''}${error.stderr || ''}`;
+  }
+}
+
+function parseAvFoundationAudioDevices(output) {
+  const devices = [];
+  let inAudio = false;
+  for (const line of String(output || '').split(/\r?\n/)) {
+    if (/AVFoundation audio devices:/i.test(line)) {
+      inAudio = true;
+      continue;
+    }
+    if (inAudio && /AVFoundation video devices:/i.test(line)) break;
+    const match = inAudio && line.match(/\[(\d+)\]\s+(.+)$/);
+    if (match) devices.push({ index: Number(match[1]), name: match[2].trim(), selector: `:${match[1]}` });
+  }
+  return devices;
+}
+
+function listNativeCaptureDevices() {
+  const binary = findNativeCaptureBinary();
+  if (!binary) return { ok: false, devices: [], raw: '', firstBlocker: 'native_capture_binary_missing' };
+  const raw = safeExecFile(binary, ['-hide_banner', '-f', 'avfoundation', '-list_devices', 'true', '-i', '']);
+  return { ok: true, devices: parseAvFoundationAudioDevices(raw), raw: raw.slice(0, 3000), firstBlocker: null };
+}
+
+function macDefaultInputDevice() {
+  if (process.platform !== 'darwin') return null;
+  const raw = safeExecFile('/usr/sbin/system_profiler', ['SPAudioDataType'], 6000);
+  const lines = String(raw || '').split(/\r?\n/);
+  let current = null;
+  for (const line of lines) {
+    const deviceMatch = line.match(/^\s{8}([^:]+):\s*$/);
+    if (deviceMatch) current = deviceMatch[1].trim();
+    if (/Default Input Device:\s*Yes/i.test(line) && current) return { name: current, raw: raw.slice(0, 3000) };
+  }
+  return { name: null, raw: raw.slice(0, 3000) };
+}
+
+function nativeInputSettingsHints() {
+  return {
+    soundInput: MAC_SOUND_INPUT_SETTINGS_URL,
+    microphonePrivacy: MAC_MICROPHONE_PRIVACY_SETTINGS_URL,
+    guidance: 'Use macOS System Settings to select a connected microphone and allow TARX microphone access.',
+  };
+}
+
+function resolveNativeCaptureDevice() {
+  const listing = listNativeCaptureDevices();
+  const defaultInput = macDefaultInputDevice();
+  const requested = VOICE_NATIVE_CAPTURE_DEVICE.trim();
+  if (requested) {
+    const match = listing.devices.find((device) => device.selector === requested || String(device.index) === requested.replace(/^:/, '') || device.name === requested || `:${device.name}` === requested);
+    return {
+      selector: match?.selector || requested,
+      source: 'env_override',
+      requested,
+      device: match || { selector: requested, name: requested, index: null },
+      defaultInput,
+      availableDevices: listing.devices,
+      settings: nativeInputSettingsHints(),
+    };
+  }
+  const byDefault = defaultInput?.name
+    ? listing.devices.find((device) => device.name.toLowerCase() === defaultInput.name.toLowerCase())
+    : null;
+  const selected = byDefault || listing.devices[0] || null;
+  return {
+    selector: selected?.selector || ':0',
+    source: byDefault ? 'macos_default_input' : (selected ? 'first_avfoundation_audio_device' : 'fallback_selector'),
+    requested: null,
+    device: selected,
+    defaultInput,
+    availableDevices: listing.devices,
+    settings: nativeInputSettingsHints(),
+  };
+}
+
 function nativeCaptureStatus() {
+  const binary = findNativeCaptureBinary();
+  const resolved = resolveNativeCaptureDevice();
   return {
     adapter: 'ffmpeg-avfoundation',
-    available: Boolean(findNativeCaptureBinary()),
-    binary: findNativeCaptureBinary(),
-    device: VOICE_NATIVE_CAPTURE_DEVICE,
+    available: Boolean(binary && resolved.device),
+    binary,
+    device: resolved.selector,
+    selectedDevice: resolved,
+    deviceSelection: resolved.source,
+    systemDefaultInput: resolved.defaultInput,
+    availableInputDevices: resolved.availableDevices,
+    settings: nativeInputSettingsHints(),
     sampleRate: VOICE_NATIVE_CAPTURE_SAMPLE_RATE,
     maxMs: VOICE_NATIVE_CAPTURE_MAX_MS,
   };
 }
 
-function nativeCaptureArgs(capturePath) {
+function nativeCaptureArgs(capturePath, selectedDevice = resolveNativeCaptureDevice()) {
   return [
     '-hide_banner',
     '-loglevel', 'error',
     '-y',
     '-f', 'avfoundation',
-    '-i', VOICE_NATIVE_CAPTURE_DEVICE,
+    '-i', selectedDevice.selector,
     '-ac', '1',
     '-ar', String(VOICE_NATIVE_CAPTURE_SAMPLE_RATE),
     '-f', 'wav',
@@ -429,11 +520,60 @@ function nativeCaptureArgs(capturePath) {
   ];
 }
 
+function readWavAudioStats(capturePath) {
+  try {
+    if (!capturePath || !fs.existsSync(capturePath)) return { validWav: false, fileSize: 0, nonSilent: false };
+    const buffer = fs.readFileSync(capturePath);
+    if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'RIFF') return { validWav: false, fileSize: buffer.length, nonSilent: false };
+    const sampleRate = buffer.readUInt32LE(24);
+    const channelCount = buffer.readUInt16LE(22);
+    const bitsPerSample = buffer.readUInt16LE(34);
+    let dataOffset = -1;
+    let dataSize = 0;
+    for (let i = 12; i + 8 < buffer.length;) {
+      const id = buffer.toString('ascii', i, i + 4);
+      const size = buffer.readUInt32LE(i + 4);
+      if (id === 'data') { dataOffset = i + 8; dataSize = size; break; }
+      i += 8 + size + (size % 2);
+    }
+    let sumSq = 0;
+    let peak = 0;
+    let count = 0;
+    if (dataOffset > 0 && bitsPerSample === 16) {
+      const end = Math.min(buffer.length, dataOffset + dataSize);
+      for (let i = dataOffset; i + 1 < end; i += 2) {
+        const sample = buffer.readInt16LE(i) / 32768;
+        const abs = Math.abs(sample);
+        if (abs > peak) peak = abs;
+        sumSq += sample * sample;
+        count += 1;
+      }
+    }
+    const rms = count ? Math.sqrt(sumSq / count) : 0;
+    return {
+      validWav: true,
+      fileSize: buffer.length,
+      sampleRate,
+      channelCount,
+      bitsPerSample,
+      durationMs: sampleRate && channelCount ? Math.round((count / sampleRate / channelCount) * 1000) : 0,
+      rms: Number(rms.toFixed(6)),
+      peakAmplitude: Number(peak.toFixed(6)),
+      nonSilent: rms > 0.003 || peak > 0.03,
+      inputStatus: rms > 0.003 || peak > 0.03 ? 'live' : 'silent_or_disconnected',
+    };
+  } catch (error) {
+    return { validWav: false, fileSize: 0, nonSilent: false, error: error.message };
+  }
+}
+
 function startNativeCaptureProcess(captureEvent) {
   const binary = findNativeCaptureBinary();
   if (!binary) throw new Error('native_capture_binary_missing');
+  const selectedDevice = resolveNativeCaptureDevice();
+  if (!selectedDevice.device && !selectedDevice.requested) throw new Error('native_capture_input_device_missing');
   const capturePath = path.join(voiceCaptureDir(), `${captureEvent.capture_id}.wav`);
-  const args = nativeCaptureArgs(capturePath);
+  const args = nativeCaptureArgs(capturePath, selectedDevice);
   const child = spawn(binary, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   let stderr = '';
   child.stderr?.on('data', (chunk) => {
@@ -446,7 +586,7 @@ function startNativeCaptureProcess(captureEvent) {
   const timeout = setTimeout(() => {
     if (!child.killed) child.kill('SIGINT');
   }, VOICE_NATIVE_CAPTURE_MAX_MS);
-  return { process: child, capturePath, startedAt: Date.now(), stderr: () => stderr, timeout };
+  return { process: child, capturePath, startedAt: Date.now(), stderr: () => stderr, timeout, selectedDevice };
 }
 
 function stopNativeCaptureProcess() {
@@ -1395,6 +1535,16 @@ ipcMain.handle('tarx:voice-request-permission', async () => requestVoicePermissi
 
 ipcMain.handle('tarx:voice-runtime-capabilities', () => voiceRuntimeCapabilities());
 
+ipcMain.handle('tarx:voice-open-input-settings', async () => {
+  await shell.openExternal(MAC_SOUND_INPUT_SETTINGS_URL);
+  return { ok: true, url: MAC_SOUND_INPUT_SETTINGS_URL };
+});
+
+ipcMain.handle('tarx:voice-open-microphone-privacy-settings', async () => {
+  await shell.openExternal(MAC_MICROPHONE_PRIVACY_SETTINGS_URL);
+  return { ok: true, url: MAC_MICROPHONE_PRIVACY_SETTINGS_URL };
+});
+
 ipcMain.handle('tarx:local-operator-control-plane', async () => localOperatorControlPlaneState());
 
 ipcMain.handle('tarx:voice-native-capture-start', async (_event, payload = {}) => {
@@ -1470,6 +1620,8 @@ ipcMain.handle('tarx:voice-native-capture-start', async (_event, payload = {}) =
       audio_ref: started.capturePath,
       raw_audio_logged: false,
       adapter: nativeStatus.adapter,
+      selected_device: started.selectedDevice,
+      system_default_input: nativeStatus.systemDefaultInput,
     },
   };
   const bridge = await emitVoiceCaptureEventToBridge(captureStartedEvent);
@@ -1478,6 +1630,7 @@ ipcMain.handle('tarx:voice-native-capture-start', async (_event, payload = {}) =
     process: started.process,
     captureEvent,
     capturePath: started.capturePath,
+    selectedDevice: started.selectedDevice,
     startedAt: started.startedAt,
     updatedAt: new Date().toISOString(),
     stderr: started.stderr,
@@ -1489,6 +1642,7 @@ ipcMain.handle('tarx:voice-native-capture-start', async (_event, payload = {}) =
     captureEvent: captureStartedEvent,
     capture: { localPath: started.capturePath, active: true },
     nativeCapture: nativeStatus,
+    selectedDevice: started.selectedDevice,
     bridge,
     routeTruth: voiceRuntimeCapabilities().routeTruth,
   });
@@ -1509,6 +1663,7 @@ ipcMain.handle('tarx:voice-native-capture-stop', async () => {
   const stopped = await stopNativeCaptureProcess();
   const capturePath = voiceNativeCaptureState.capturePath;
   const bytes = capturePath && fs.existsSync(capturePath) ? fs.statSync(capturePath).size : 0;
+  const audioStats = readWavAudioStats(capturePath);
   const durationMs = voiceNativeCaptureState.startedAt ? Math.max(1, Date.now() - voiceNativeCaptureState.startedAt) : 0;
   const captureEvent = voiceNativeCaptureState.captureEvent
     ? {
@@ -1524,6 +1679,9 @@ ipcMain.handle('tarx:voice-native-capture-stop', async () => {
           audio_bytes: bytes,
           raw_audio_logged: false,
           adapter: 'ffmpeg-avfoundation',
+          audio_stats: audioStats,
+          selected_device: voiceNativeCaptureState.selectedDevice,
+          input_status: audioStats.inputStatus,
         },
       }
     : null;
@@ -1535,7 +1693,9 @@ ipcMain.handle('tarx:voice-native-capture-stop', async () => {
     state: 'off',
     source: 'electron_native',
     captureEvent,
-    capture: { localPath: capturePath, audioBytes: bytes, active: false, stopped },
+    capture: { localPath: capturePath, audioBytes: bytes, audioStats, active: false, stopped },
+    inputStatus: audioStats.inputStatus,
+    settings: nativeInputSettingsHints(),
     bridge,
     stt,
     routeTruth: voiceRuntimeCapabilities().routeTruth,
@@ -1548,7 +1708,9 @@ ipcMain.handle('tarx:voice-native-capture-stop', async () => {
     label: VOICE_UX_STATES.off,
     source: 'electron_native',
     captureEvent,
-    capture: { localPath: capturePath, audioBytes: bytes, active: false, stopped },
+    capture: { localPath: capturePath, audioBytes: bytes, audioStats, active: false, stopped },
+    inputStatus: audioStats.inputStatus,
+    settings: nativeInputSettingsHints(),
     bridge,
     stt,
     routeTruth: voiceRuntimeCapabilities().routeTruth,
