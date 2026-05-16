@@ -38,3 +38,9 @@ Forbidden payload scan: **0 hits**. No Whisper, Gemma, Vision, TTS model payload
 ## Next Blocker
 
 Capture a fresh spoken Electron-native WAV of “TARX, what are we working on today?” (spoken as “TARS, what are we working on today?”), submit it to local Whisper, and require a meaningful transcript before continuing the full local voice loop.
+
+## Voice Input Doctor
+
+Run `npm run qa:voice-input-doctor` before retrying semantic STT if native capture returns a valid WAV with RMS/peak at zero. The doctor verifies macOS default input, AVFoundation visibility, recent silence evidence, and keeps the blocker classified as environment/input red rather than Whisper or TARX runtime red.
+
+Current known blocker: the stale Razer Kiyo Pro input can appear as the macOS/AVFoundation default while returning all-zero samples. Select a connected live microphone in System Settings > Sound > Input, verify the input meter moves, then rerun the spoken `TARS` STT proof.

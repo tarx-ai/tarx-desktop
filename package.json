@@ -21,7 +21,8 @@
     "qa:action-safety-gate": "node scripts/qa-action-safety-gate.js",
     "qa:local-operator-control-plane": "node scripts/qa-local-operator-control-plane.js",
     "qa:local-operator-footprint": "node scripts/qa-local-operator-footprint.js",
-    "qa:voice-pronunciation-rule": "node scripts/qa-voice-pronunciation-rule.js"
+    "qa:voice-pronunciation-rule": "node scripts/qa-voice-pronunciation-rule.js",
+    "qa:voice-input-doctor": "node scripts/qa-voice-input-doctor.js"
   },
   "author": "TARXAN INC.",
   "license": "UNLICENSED",
