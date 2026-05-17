@@ -1,5 +1,10 @@
 # Release Notes
 
+## 2026-05-17 - Runtime Spine And Manual Voice Intelligence
+
+- Adds Runtime Spine audit commands for Prime Electron, exposing Bridge/runtime parity, local operator capability state, and degraded runtime endpoints without enabling production voice or autonomous actions.
+- Adds Manual Voice intelligence QA so internal voice answers are grounded in current TARX gates, route truth, secret-handling rules, and proposal-only Computer Use boundaries.
+
 ## 2026-05-17 - Voice Default Input Hardening
 
 - Adds macOS default input mode and explicit microphone override handling for internal Voice testing.

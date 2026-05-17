@@ -28,7 +28,11 @@
     "qa:voice-internal-beta-loop": "node scripts/qa-voice-internal-beta-loop.js",
     "qa:voice-panel-state-machine": "node scripts/qa-voice-panel-state-machine.js",
     "qa:voice-evidence-panel": "node scripts/qa-voice-evidence-panel.js",
-    "qa:voice-prime-readiness": "node scripts/qa-voice-prime-readiness.js"
+    "qa:voice-prime-readiness": "node scripts/qa-voice-prime-readiness.js",
+    "qa:voice-manual-loop": "node scripts/qa-voice-manual-loop.js",
+    "qa:voice-manual-intelligence": "node scripts/qa-voice-manual-intelligence.js",
+    "qa:runtime-spine-performance": "node scripts/qa-runtime-spine-performance.js",
+    "qa:runtime-spine-readiness": "node scripts/qa-runtime-spine-readiness.js"
   },
   "author": "TARXAN INC.",
   "license": "UNLICENSED",

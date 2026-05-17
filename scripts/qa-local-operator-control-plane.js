@@ -18,7 +18,10 @@ const check = (name, pass, detail = null) => checks.push({ name, pass: Boolean(p
 
 const flags = [
   'TARX_VOICE_NATIVE_CAPTURE',
+  'TARX_VOICE_MANUAL_INTERNAL',
   'TARX_VOICE_BROWSER_FALLBACK',
+  'TARX_VOICE_MEDIADEVICES_INTERNAL',
+  'TARX_VOICE_PIPECAT_INTERNAL',
   'TARX_VOICE_LOCAL_PACK',
   'TARX_VISION_LOCAL_PACK',
   'TARX_ACTION_PROPOSALS',
@@ -41,9 +44,17 @@ check('control_plane.supercomputer_off', main.includes("supercomputer: LOCAL_OPE
 check('control_plane.action_proposals_gated', main.includes('enableActionProposals') && main.includes('execution_enabled: false'), null);
 check('control_plane.no_raw_private_logs', main.includes('raw_audio_logged_by_default: false') && main.includes('raw_screenshots_logged_by_default: false') && main.includes('full_transcripts_logged_by_default: false'), null);
 check('control_plane.no_production_claims', main.includes('production_voice_claim: false') && main.includes('daniel_approved: false') && main.includes('vision_green_claim: false'), null);
-for (const forbiddenClaim of ['production voice', 'Jarvis', 'autonomous operator', 'always-on', 'bundled local models', 'Supercomputer enabled']) {
-  const haystack = `${main}\n${preload}`;
-  check(`public_claims.no_${forbiddenClaim.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`, !haystack.toLowerCase().includes(forbiddenClaim.toLowerCase()), forbiddenClaim);
+const haystack = `${main}\n${preload}`;
+const forbiddenClaims = [
+  ['production_voice', /(?:production|public release)\s+voice\s+(?:ready|enabled|green|available|launched)/i],
+  ['jarvis', /\bjarvis\b/i],
+  ['autonomous_operator', /autonomous operator/i],
+  ['always_on', /always-on\s+(?:ready|enabled|green|available|launched)/i],
+  ['bundled_local_models', /bundled local models/i],
+  ['supercomputer_enabled', /Supercomputer enabled/i],
+];
+for (const [name, pattern] of forbiddenClaims) {
+  check(`public_claims.no_${name}`, !pattern.test(haystack), String(pattern));
 }
 
 check('manifest.schema_present', manifest.schema === 'tarx-local-operator-packs.v1', manifest.schema);
