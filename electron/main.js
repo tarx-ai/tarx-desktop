@@ -9,6 +9,8 @@ const fs = require('fs');
 const { spawn, execFileSync } = require('child_process');
 
 const isDev = process.env.NODE_ENV === 'development';
+const SAFE_MODE = process.env.TARX_SAFE_MODE === '1' || process.argv.includes('--tarx-safe-mode');
+const RENDERER_READY_TIMEOUT_MS = Number(process.env.TARX_RENDERER_READY_TIMEOUT_MS || 12_000);
 
 // Enable accessibility tree for TARX Vision (AX-based UI automation)
 app.commandLine.appendSwitch('force-renderer-accessibility');
@@ -87,6 +89,13 @@ let voiceNativeCaptureState = { active: false, process: null, captureEvent: null
 let composerIpcRegistered = false;
 let updateDownloadWatchdog = null;
 let updateDownloadInFlight = null;
+let rendererReadyTimer = null;
+let rendererLastReady = null;
+let lastRouteAttempted = null;
+let previousRouteBeforeRefresh = null;
+let lastRefreshState = null;
+let firstRendererError = null;
+let safeShellVisible = false;
 
 function syncWindowButtonVisibility() {
   if (process.platform !== 'darwin' || !mainWindow || typeof mainWindow.setWindowButtonVisibility !== 'function') return;
@@ -106,6 +115,242 @@ function writeDiagnostic(name, payload) {
   } catch (error) {
     console.log(`[tarx] Failed to write ${name}:`, error.message);
   }
+}
+
+function appBuildInfo() {
+  return {
+    version: app.getVersion(),
+    name: app.getName(),
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    safeMode: SAFE_MODE,
+    primaryUrl: PRIMARY_URL,
+    currentUrl,
+  };
+}
+
+function currentWebContentsUrl() {
+  try {
+    return mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.getURL() : '';
+  } catch {
+    return '';
+  }
+}
+
+function recordRouteAttempt(url, reason) {
+  lastRouteAttempted = url || null;
+  writeDiagnostic('latest-route-attempt.json', {
+    schema: 'tarx-electron-route-attempt.v1',
+    ts: new Date().toISOString(),
+    reason,
+    lastRouteAttempted,
+    previousRouteBeforeRefresh,
+    safeMode: SAFE_MODE,
+  });
+}
+
+function rendererRecoverySnapshot(reason, extra = {}) {
+  return {
+    schema: 'tarx-electron-renderer-recovery.v1',
+    ts: new Date().toISOString(),
+    reason,
+    status: 'safe_shell_visible',
+    build: appBuildInfo(),
+    currentUrl: currentWebContentsUrl(),
+    currentUrlState: currentUrl,
+    lastRouteAttempted,
+    previousRouteBeforeRefresh,
+    lastRefresh: lastRefreshState,
+    rendererLastReady,
+    firstError: firstRendererError,
+    safeMode: SAFE_MODE,
+    runtime: runtimeState,
+    flags: { ...LOCAL_OPERATOR_FLAGS },
+    extra,
+  };
+}
+
+function clearRendererReadyTimer() {
+  if (rendererReadyTimer) clearTimeout(rendererReadyTimer);
+  rendererReadyTimer = null;
+}
+
+function armRendererReadyTimer(reason, route) {
+  clearRendererReadyTimer();
+  rendererReadyTimer = setTimeout(() => {
+    if (safeShellVisible) return;
+    firstRendererError = firstRendererError || {
+      ts: new Date().toISOString(),
+      source: 'renderer-heartbeat',
+      message: `Renderer did not report ready within ${RENDERER_READY_TIMEOUT_MS}ms`,
+      route: route || lastRouteAttempted,
+    };
+    showSafeShell('renderer_ready_timeout', { trigger: reason, route: route || lastRouteAttempted });
+  }, RENDERER_READY_TIMEOUT_MS);
+}
+
+function markRendererReady(payload = {}) {
+  rendererLastReady = {
+    ts: new Date().toISOString(),
+    payload,
+    url: currentWebContentsUrl(),
+  };
+  clearRendererReadyTimer();
+  writeDiagnostic('latest-renderer-ready.json', rendererLastReady);
+}
+
+function htmlEscape(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function safeShellHtml(snapshot) {
+  const firstError = snapshot.firstError?.message || snapshot.extra?.error || 'unknown';
+  const lastRoute = snapshot.lastRouteAttempted || snapshot.currentUrl || 'unknown';
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TARX Safe Shell</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #0a0a0d;
+      color: #f5f5f7;
+      font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(720px, calc(100vw - 40px));
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 10px;
+      padding: 28px;
+      background: #111318;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.34);
+    }
+    h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: 0; }
+    h2 { margin: 0 0 18px; font-size: 16px; font-weight: 600; color: #cfd6e2; letter-spacing: 0; }
+    dl { display: grid; grid-template-columns: 150px 1fr; gap: 8px 14px; margin: 18px 0; color: #b6bfcc; }
+    dt { color: #808a99; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    button {
+      border: 1px solid rgba(255,255,255,0.16);
+      border-radius: 7px;
+      background: #1a1e27;
+      color: #fff;
+      padding: 9px 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button.primary { background: #d8e9ff; color: #08111f; border-color: #d8e9ff; font-weight: 650; }
+    p { color: #aeb7c4; margin: 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>TARX</h1>
+    <h2>The workspace failed to load.</h2>
+    <p>TARX opened a recovery shell instead of leaving the app on a black screen. User data is preserved.</p>
+    <dl>
+      <dt>Version</dt><dd>${htmlEscape(snapshot.build.version)}</dd>
+      <dt>Build</dt><dd>${htmlEscape(snapshot.build.isPackaged ? 'packaged' : 'development')}</dd>
+      <dt>Safe mode</dt><dd>${htmlEscape(snapshot.safeMode ? 'on' : 'off')}</dd>
+      <dt>Last route</dt><dd>${htmlEscape(lastRoute)}</dd>
+      <dt>First error</dt><dd>${htmlEscape(firstError)}</dd>
+    </dl>
+    <div class="actions">
+      <button class="primary" data-action="reload">Reload</button>
+      <button data-action="restart">Restart app</button>
+      <button data-action="safe-mode">Open safe mode</button>
+      <button data-action="copy">Copy diagnostics</button>
+      <button data-action="logs">Open logs</button>
+      <button data-action="quit">Quit</button>
+    </div>
+  </main>
+  <script>
+    document.addEventListener('click', function(event) {
+      var button = event.target.closest('button[data-action]');
+      if (!button || !window.__TARX_DESKTOP__ || !window.__TARX_DESKTOP__.safeRecovery) return;
+      var action = button.getAttribute('data-action');
+      var recovery = window.__TARX_DESKTOP__.safeRecovery;
+      if (action === 'reload') recovery.reload();
+      if (action === 'restart') recovery.restart();
+      if (action === 'safe-mode') recovery.openSafeMode();
+      if (action === 'copy') recovery.copyDiagnostics();
+      if (action === 'logs') recovery.openLogs();
+      if (action === 'quit') recovery.quit();
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function showSafeShell(reason, extra = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  clearRendererReadyTimer();
+  safeShellVisible = true;
+  firstRendererError = firstRendererError || {
+    ts: new Date().toISOString(),
+    source: reason,
+    message: extra.error || extra.message || reason,
+    route: extra.route || lastRouteAttempted || currentWebContentsUrl(),
+  };
+  const snapshot = rendererRecoverySnapshot(reason, extra);
+  writeDiagnostic('latest-safe-shell.json', snapshot);
+  const html = safeShellHtml(snapshot);
+  mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch((error) => {
+    console.error('[tarx] Failed to show safe shell:', error.message);
+  });
+  if (!mainWindow.isVisible()) mainWindow.show();
+  trayManager?.setStatus('offline');
+}
+
+function loadRouteWithRecovery(url, reason) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  safeShellVisible = false;
+  recordRouteAttempt(url, reason);
+  armRendererReadyTimer(reason, url);
+  mainWindow.loadURL(url).catch((error) => {
+    firstRendererError = firstRendererError || {
+      ts: new Date().toISOString(),
+      source: 'loadURL',
+      message: error.message,
+      route: url,
+    };
+    showSafeShell('load_url_failed', { route: url, error: error.message });
+  });
+}
+
+function refreshTarx(trigger = 'manual') {
+  if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, reason: 'main_window_unavailable' };
+  previousRouteBeforeRefresh = currentWebContentsUrl() || lastRouteAttempted || currentUrl || PRIMARY_URL;
+  lastRefreshState = {
+    ts: new Date().toISOString(),
+    trigger,
+    previousRoute: previousRouteBeforeRefresh,
+    safeMode: SAFE_MODE,
+  };
+  writeDiagnostic('latest-refresh.json', lastRefreshState);
+  if (SAFE_MODE || safeShellVisible) {
+    showSafeShell('refresh_requested_from_safe_shell', { trigger, route: previousRouteBeforeRefresh });
+    return { ok: true, mode: 'safe_shell' };
+  }
+  safeShellVisible = false;
+  firstRendererError = null;
+  recordRouteAttempt(previousRouteBeforeRefresh, `refresh:${trigger}`);
+  armRendererReadyTimer(`refresh:${trigger}`, previousRouteBeforeRefresh);
+  mainWindow.webContents.reload();
+  return { ok: true, route: previousRouteBeforeRefresh };
 }
 
 function readLocalOperatorPackManifest() {
@@ -1213,6 +1458,10 @@ function createWindow() {
 
   // Inject desktop integration CSS + JS after each page load
   mainWindow.webContents.on('did-finish-load', () => {
+    if (safeShellVisible || SAFE_MODE) {
+      if (SAFE_MODE && !safeShellVisible) showSafeShell('safe_mode_boot');
+      return;
+    }
     mainWindow.webContents.insertCSS(`
       /* Drag region for title bar */
       body::before {
@@ -1823,6 +2072,27 @@ function createWindow() {
     }
   );
 
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    firstRendererError = firstRendererError || {
+      ts: new Date().toISOString(),
+      source: 'render-process-gone',
+      message: details?.reason || 'render_process_gone',
+      route: currentWebContentsUrl() || lastRouteAttempted,
+      details,
+    };
+    showSafeShell('render_process_gone', { details, route: currentWebContentsUrl() || lastRouteAttempted });
+  });
+
+  mainWindow.webContents.on('unresponsive', () => {
+    firstRendererError = firstRendererError || {
+      ts: new Date().toISOString(),
+      source: 'unresponsive',
+      message: 'renderer_unresponsive',
+      route: currentWebContentsUrl() || lastRouteAttempted,
+    };
+    showSafeShell('renderer_unresponsive', { route: currentWebContentsUrl() || lastRouteAttempted });
+  });
+
   loadBestUrl();
 
   mainWindow.once('ready-to-show', () => {
@@ -1846,7 +2116,13 @@ function createWindow() {
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDesc, validatedUrl) => {
     if (errorCode === -3) return;
     console.error(`[tarx] Load failed: ${errorCode} ${errorDesc} at ${validatedUrl}`);
-    handleLoadFailure();
+    firstRendererError = firstRendererError || {
+      ts: new Date().toISOString(),
+      source: 'did-fail-load',
+      message: `${errorCode} ${errorDesc}`,
+      route: validatedUrl,
+    };
+    handleLoadFailure(errorCode, errorDesc, validatedUrl);
   });
 
   mainWindow.on('closed', () => {
@@ -1864,12 +2140,17 @@ function registerComposerIpc() {
 
 // ── URL routing with fallback ────────────────────────────────────────────────
 async function loadBestUrl() {
+  if (SAFE_MODE) {
+    showSafeShell('safe_mode_boot');
+    return;
+  }
+
   const primary = await probe(PRIMARY_URL + '/api/version', true);
   if (primary) {
     currentUrl = PRIMARY_URL;
     isOnline = true;
     trayManager?.setStatus('online');
-    mainWindow?.loadURL(PRIMARY_URL);
+    loadRouteWithRecovery(PRIMARY_URL, 'load_best_primary');
     return;
   }
 
@@ -1878,28 +2159,31 @@ async function loadBestUrl() {
     currentUrl = FALLBACK_URL;
     isOnline = false;
     trayManager?.setStatus('local');
-    mainWindow?.loadURL(FALLBACK_URL);
+    loadRouteWithRecovery(FALLBACK_URL, 'load_best_fallback');
     return;
   }
 
-  // Both unreachable — show offline page
+  // Both unreachable — show recovery shell instead of a blank/offline trap.
   isOnline = false;
   trayManager?.setStatus('offline');
-  mainWindow?.loadFile(path.join(__dirname, 'offline.html'));
+  showSafeShell('primary_and_fallback_unreachable');
 }
 
-function handleLoadFailure() {
+function handleLoadFailure(errorCode = null, errorDesc = '', validatedUrl = '') {
+  if (safeShellVisible) return;
   if (currentUrl === PRIMARY_URL) {
     probe(FALLBACK_URL + '/health', false).then((ok) => {
       if (ok) {
         currentUrl = FALLBACK_URL;
         trayManager?.setStatus('local');
-        mainWindow?.loadURL(FALLBACK_URL);
+        loadRouteWithRecovery(FALLBACK_URL, 'primary_failed_fallback');
       } else {
         trayManager?.setStatus('offline');
-        mainWindow?.loadFile(path.join(__dirname, 'offline.html'));
+        showSafeShell('load_failed_no_fallback', { errorCode, errorDesc, route: validatedUrl });
       }
     });
+  } else {
+    showSafeShell('load_failed', { errorCode, errorDesc, route: validatedUrl || currentUrl });
   }
 }
 
@@ -2287,6 +2571,7 @@ async function proposeUiAction(payload = {}) {
 // ── Periodic health check ────────────────────────────────────────────────────
 function startHealthLoop() {
   setInterval(async () => {
+    if (SAFE_MODE || safeShellVisible) return;
     const primary = await probe(PRIMARY_URL + '/api/version', true);
 
     if (primary && currentUrl !== PRIMARY_URL) {
@@ -2294,7 +2579,7 @@ function startHealthLoop() {
       currentUrl = PRIMARY_URL;
       isOnline = true;
       trayManager?.setStatus('online');
-      mainWindow?.loadURL(PRIMARY_URL);
+      loadRouteWithRecovery(PRIMARY_URL, 'health_loop_primary_restored');
       return;
     }
 
@@ -2350,8 +2635,20 @@ function buildMenu() {
     {
       label: 'View',
       submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
+        {
+          label: 'Refresh TARX',
+          accelerator: 'CmdOrCtrl+R',
+          click: () => refreshTarx('menu-refresh'),
+        },
+        {
+          label: 'Force Refresh TARX',
+          accelerator: 'CmdOrCtrl+Shift+R',
+          click: () => refreshTarx('menu-force-refresh'),
+        },
+        {
+          label: 'Open Safe Mode',
+          click: () => showSafeShell('menu_open_safe_mode'),
+        },
         { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },
@@ -2386,8 +2683,12 @@ function showAbout() {
 }
 
 function openPreferences() {
+  if (SAFE_MODE || safeShellVisible) {
+    showSafeShell('preferences_requested_from_safe_shell');
+    return;
+  }
   if (mainWindow && currentUrl === PRIMARY_URL) {
-    mainWindow.loadURL(PRIMARY_URL + '/settings');
+    loadRouteWithRecovery(PRIMARY_URL + '/settings', 'preferences');
   } else if (mainWindow) {
     mainWindow.focus();
   }
@@ -2488,6 +2789,59 @@ ipcMain.handle('tarx:download-update', async () => {
 ipcMain.handle('tarx:copy-text', (_event, value) => {
   clipboard.writeText(String(value || ''));
   return true;
+});
+
+ipcMain.on('tarx:renderer-ready', (_event, payload = {}) => {
+  markRendererReady(payload);
+});
+
+ipcMain.handle('tarx:refresh', (_event, payload = {}) => {
+  return refreshTarx(payload.trigger || 'renderer-refresh');
+});
+
+ipcMain.handle('tarx:safe-shell-diagnostics', () => rendererRecoverySnapshot('diagnostics_requested'));
+
+ipcMain.handle('tarx:safe-shell-copy-diagnostics', () => {
+  const snapshot = rendererRecoverySnapshot('copy_diagnostics_requested');
+  clipboard.writeText(JSON.stringify(snapshot, null, 2));
+  return { ok: true, snapshot };
+});
+
+ipcMain.handle('tarx:safe-shell-open-logs', async () => {
+  const dir = diagnosticsDir();
+  const result = await shell.openPath(dir);
+  return { ok: !result, path: dir, error: result || null };
+});
+
+ipcMain.handle('tarx:safe-shell-reload', () => {
+  const target = previousRouteBeforeRefresh || lastRouteAttempted || PRIMARY_URL;
+  safeShellVisible = false;
+  firstRendererError = null;
+  loadRouteWithRecovery(target, 'safe_shell_reload');
+  return { ok: true, route: target };
+});
+
+ipcMain.handle('tarx:safe-shell-open-safe-mode', () => {
+  writeDiagnostic('latest-safe-mode-request.json', {
+    schema: 'tarx-safe-mode-request.v1',
+    ts: new Date().toISOString(),
+    source: 'safe_shell',
+    preservesUserData: true,
+  });
+  app.relaunch({ args: Array.from(new Set([...process.argv.slice(1), '--tarx-safe-mode'])) });
+  app.exit(0);
+  return { ok: true, safeMode: true };
+});
+
+ipcMain.handle('tarx:safe-shell-restart', () => {
+  app.relaunch();
+  app.exit(0);
+  return { ok: true };
+});
+
+ipcMain.handle('tarx:safe-shell-quit', () => {
+  app.quit();
+  return { ok: true };
 });
 
 ipcMain.handle('tarx:vision-observe', async (_event, payload) => {
@@ -2777,14 +3131,14 @@ function handleDeepLink(url) {
       if (mainWindow) {
         mainWindow.show();
         mainWindow.focus();
-        mainWindow.loadURL(webUrl);
+        loadRouteWithRecovery(webUrl, 'deep_link_auth');
 
         // After auth callback processes, always navigate to home.
         // Auth.js sometimes lands on /settings or /login?error= — override both.
         mainWindow.webContents.once('did-finish-load', () => {
           const finalUrl = mainWindow.webContents.getURL();
           if (finalUrl.includes('/login?error=') || finalUrl.includes('/settings') || finalUrl.includes('/api/auth')) {
-            mainWindow.loadURL(PRIMARY_URL);
+            loadRouteWithRecovery(PRIMARY_URL, 'deep_link_auth_home');
           }
         });
       }
@@ -2806,7 +3160,7 @@ app.whenReady().then(async () => {
   });
 
   buildMenu();
-  await ensureLocalRuntime();
+  if (!SAFE_MODE) await ensureLocalRuntime();
   registerComposerIpc();
   createWindow();
   startHealthLoop();

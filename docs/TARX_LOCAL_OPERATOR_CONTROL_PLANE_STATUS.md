@@ -1,17 +1,21 @@
 # TARX Local Operator Control Plane Status
 
-Updated: 2026-05-16
+Updated: 2026-05-17
 
 ## Decision
 
-Recommendation: **MERGE CONTROL PLANE ONLY**
+Recommendation: **RELEASE STABILITY GREEN FOR BLACK-SCREEN RECOVERY GATE**
 
-This is not a Local Operator beta and not production voice. The patch adds a hidden, inert readiness control plane for Electron only. Models are not bundled, runtime behavior remains disabled by default, Supercomputer remains off, and Computer Use execution remains disabled.
+The Skynet `Refresh TARX` black-screen incident is recovered manually, but root cause remains unknown. This is not a Local Operator beta, not production voice, and not wake-word mode. Models are not bundled, Supercomputer remains off, and Computer Use execution remains disabled.
 
 ## Current Status
 
 | Workstream | Status | Notes |
 | --- | --- | --- |
+| Electron Black Screen Incident | RECOVERED / ROOT CAUSE UNKNOWN | Triggered by `Refresh TARX` on Skynet; public Electron release blocked until recovery QA is green. |
+| Refresh TARX | RECOVERY QA GREEN | Refresh now has previous-route recording, renderer heartbeat, safe-shell fallback, and safe-mode recovery. |
+| Public Electron Release | RELEASE STABILITY GREEN FOR BLACK-SCREEN RECOVERY GATE | Normal signed-build, notarization, and target-machine smoke gates still apply before shipment. |
+| Internal development | ALLOWED | Feature merges allowed only if they do not touch refresh/boot path or if stability QA passes afterward. |
 | Electron Local Operator Control Plane | GREEN | Hidden unless `TARX_LOCAL_OPERATOR_BETA=1`; feature flags default off. |
 | Signed Build Validation | GREEN | `npm run build` completed; app is notarized and accepted by `spctl`. |
 | Local Operator Beta | BLOCKED | Do not run combined beta yet. |
@@ -34,6 +38,9 @@ Forbidden payload scan: **0 hits**. No Whisper, Gemma, Vision, TTS model payload
 - `/Users/master/.tarx/runs/local-operator-control-plane/latest.json`
 - `/Users/master/.tarx/runs/local-operator-footprint/latest.json`
 - `/Users/master/.tarx/runs/local-operator-package-build/latest.json`
+- `/Users/master/.tarx/runs/electron-black-screen-incident/latest.json`
+- `/Users/master/.tarx/runs/electron-black-screen-recovery/latest.json`
+- `/Users/master/.tarx/runs/electron-release-stability/latest.json`
 
 ## Next Blocker
 

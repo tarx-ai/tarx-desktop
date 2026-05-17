@@ -2,6 +2,19 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+function notifyRendererReady(phase) {
+  ipcRenderer.send('tarx:renderer-ready', {
+    schema: 'tarx-renderer-ready.v1',
+    phase,
+    href: window.location.href,
+    title: document.title || '',
+    ts: new Date().toISOString(),
+  });
+}
+
+window.addEventListener('DOMContentLoaded', () => notifyRendererReady('domcontentloaded'));
+window.addEventListener('load', () => notifyRendererReady('load'));
+
 const TARX_VOICE_UX_STATES = {
   off: 'Voice off',
   permissionNeeded: 'Allow microphone access to talk to TARX.',
@@ -276,11 +289,22 @@ contextBridge.exposeInMainWorld('__TARX_DESKTOP__', {
   onRuntimeStatus: (cb) => ipcRenderer.on('tarx:runtime-status', (_e, info) => cb(info)),
   relaunchToUpdate: () => ipcRenderer.invoke('tarx:relaunch-to-update'),
   copyText: (value) => ipcRenderer.invoke('tarx:copy-text', value),
+  refreshTarx: () => ipcRenderer.invoke('tarx:refresh', { trigger: 'renderer-api' }),
+  safeRecovery: {
+    reload: () => ipcRenderer.invoke('tarx:safe-shell-reload'),
+    restart: () => ipcRenderer.invoke('tarx:safe-shell-restart'),
+    openSafeMode: () => ipcRenderer.invoke('tarx:safe-shell-open-safe-mode'),
+    copyDiagnostics: () => ipcRenderer.invoke('tarx:safe-shell-copy-diagnostics'),
+    openLogs: () => ipcRenderer.invoke('tarx:safe-shell-open-logs'),
+    quit: () => ipcRenderer.invoke('tarx:safe-shell-quit'),
+    diagnostics: () => ipcRenderer.invoke('tarx:safe-shell-diagnostics'),
+  },
 });
 
 // Also expose as electronAPI for the title bar button
 contextBridge.exposeInMainWorld('electronAPI', {
   openComposer: () => ipcRenderer.invoke('open-composer'),
+  refreshTarx: () => ipcRenderer.invoke('tarx:refresh', { trigger: 'electron-api' }),
   voice: tarxVoiceBridge,
   vision: tarxVisionBridge,
   action: tarxActionBridge,

@@ -1,5 +1,14 @@
 # Release Notes
 
+## 2026-05-17 - Electron Black Screen Recovery Hardening
+
+- Records the Skynet `Refresh TARX` black-screen incident as recovered manually with root cause unknown.
+- Hardens `Refresh TARX` with previous-route recording, renderer ready heartbeat, load timeout recovery, and safe-shell fallback.
+- Adds `TARX_SAFE_MODE=1` / `--tarx-safe-mode` boot path that skips runtime-dependent boot work and opens a minimal recovery shell.
+- Adds safe-shell actions for Reload, Restart app, Open safe mode, Copy diagnostics, Open logs, and Quit.
+- Adds `qa:electron-black-screen-recovery` and `qa:electron-release-stability`.
+- Public Electron release now depends on signed build and standard release gates after recovery QA is green.
+
 ## 2026-05-17 - Runtime Spine And Manual Voice Intelligence
 
 - Adds Runtime Spine audit commands for Prime Electron, exposing Bridge/runtime parity, local operator capability state, and degraded runtime endpoints without enabling production voice or autonomous actions.

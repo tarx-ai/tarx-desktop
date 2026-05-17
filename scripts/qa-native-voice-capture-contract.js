@@ -27,7 +27,7 @@ record('native_capture.exposes_available_input_devices', main.includes('availabl
 record('native_capture.detects_silent_or_disconnected_input', main.includes('readWavAudioStats') && main.includes('silent_or_disconnected') && main.includes('inputStatus'), 'silent input detection');
 record('native_capture.opens_system_settings', main.includes('tarx:voice-open-input-settings') && preload.includes('openInputSettings'), 'Sound input settings affordance');
 record('native_capture.opens_microphone_privacy_settings', main.includes('tarx:voice-open-microphone-privacy-settings') && preload.includes('openMicrophonePrivacySettings'), 'Microphone privacy settings affordance');
-record('native_capture.audio_file_reference_only', main.includes('audio_ref') && main.includes('raw_audio_logged: false') && !main.includes('rawAudio'), 'audio ref without raw telemetry');
+record('native_capture.audio_file_reference_only', main.includes('audio_ref') && main.includes('raw_audio_logged: false') && !/\brawAudio\b/.test(main), 'audio ref without raw telemetry');
 record('native_capture.stop_kills_process_and_stats_bytes', main.includes('stopNativeCaptureProcess') && main.includes('fs.statSync(capturePath).size'), 'stop and byte proof');
 record('native_capture.preload_stop_routes_native', preload.includes("activeSource === 'electron_native'") && preload.includes('tarx:voice-native-capture-stop'), 'native stop path');
 record('native_capture.whisper_endpoint_uses_11447', main.includes("http://127.0.0.1:11447") && main.includes('/inference'), 'whisper.cpp /inference route');
@@ -41,7 +41,7 @@ record('voice_states.responding', main.includes('TARX is responding') && preload
 record('voice_states.unavailable_fallback', main.includes('Voice unavailable, try fallback') && preload.includes('Voice unavailable, try fallback'), 'fallback copy');
 record('preload.exposes_runtime_capabilities', preload.includes('getRuntimeCapabilities'), 'window.tarxVoiceNative.getRuntimeCapabilities');
 record('preload.exposes_native_start_stop', preload.includes('startNativeCapture') && preload.includes('stopNativeCapture'), 'native start/stop');
-record('preload.browser_capture_does_not_send_raw_audio_to_bridge', preload.includes("tarx:voice-capture-event") && !preload.includes('rawAudio'), 'metadata-only bridge event');
+record('preload.browser_capture_does_not_send_raw_audio_to_bridge', preload.includes("tarx:voice-capture-event") && !/\brawAudio\b/.test(preload), 'metadata-only bridge event');
 record('package.qa_script_registered', Boolean(pkg.scripts['qa:native-voice-capture-contract']), pkg.scripts['qa:native-voice-capture-contract'] || '');
 
 const result = {

@@ -32,7 +32,9 @@
     "qa:voice-manual-loop": "node scripts/qa-voice-manual-loop.js",
     "qa:voice-manual-intelligence": "node scripts/qa-voice-manual-intelligence.js",
     "qa:runtime-spine-performance": "node scripts/qa-runtime-spine-performance.js",
-    "qa:runtime-spine-readiness": "node scripts/qa-runtime-spine-readiness.js"
+    "qa:runtime-spine-readiness": "node scripts/qa-runtime-spine-readiness.js",
+    "qa:electron-black-screen-recovery": "node scripts/qa-electron-black-screen-recovery.js",
+    "qa:electron-release-stability": "node scripts/qa-electron-release-stability.js"
   },
   "author": "TARXAN INC.",
   "license": "UNLICENSED",
