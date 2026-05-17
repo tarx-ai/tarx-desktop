@@ -1147,12 +1147,15 @@ function createWindow() {
         panel.innerHTML = '' +
           '<label for="tarx-native-voice-device">Input</label>' +
           '<select id="tarx-native-voice-device"></select>' +
+          '<div class="tarx-voice-status" id="tarx-native-voice-default">Detecting macOS default input...</div>' +
           '<label for="tarx-native-voice-custom" style="margin-top:10px">Override selector/name</label>' +
-          '<input id="tarx-native-voice-custom" placeholder=":0 or exact device name" />' +
+          '<input id="tarx-native-voice-custom" placeholder="Optional: :1 or exact device name" />' +
+          '<div class="tarx-voice-command" id="tarx-native-voice-override-warning" hidden></div>' +
           '<div class="tarx-voice-row">' +
           '  <button class="tarx-voice-primary" id="tarx-native-voice-start" type="button">Start</button>' +
           '  <button id="tarx-native-voice-stop" type="button">Stop</button>' +
           '  <button id="tarx-native-voice-refresh" type="button">Refresh</button>' +
+          '  <button id="tarx-native-voice-clear-override" type="button">Clear override</button>' +
           '</div>' +
           '<div class="tarx-voice-row">' +
           '  <button id="tarx-native-voice-sound" type="button">Sound Input</button>' +
@@ -1174,9 +1177,12 @@ function createWindow() {
         var deviceSelect = panel.querySelector('#tarx-native-voice-device');
         var customInput = panel.querySelector('#tarx-native-voice-custom');
         var statusNode = panel.querySelector('#tarx-native-voice-status');
+        var defaultNode = panel.querySelector('#tarx-native-voice-default');
+        var overrideWarningNode = panel.querySelector('#tarx-native-voice-override-warning');
         var startButton = panel.querySelector('#tarx-native-voice-start');
         var stopButton = panel.querySelector('#tarx-native-voice-stop');
         var refreshButton = panel.querySelector('#tarx-native-voice-refresh');
+        var clearOverrideButton = panel.querySelector('#tarx-native-voice-clear-override');
         var soundButton = panel.querySelector('#tarx-native-voice-sound');
         var privacyButton = panel.querySelector('#tarx-native-voice-privacy');
         var doctorButton = panel.querySelector('#tarx-native-voice-doctor');
@@ -1288,7 +1294,26 @@ function createWindow() {
         function selectedDeviceValue() {
           var custom = customInput && customInput.value ? customInput.value.trim() : '';
           if (custom) return custom;
+          if (deviceSelect && deviceSelect.value === '__missing__') return '';
           return deviceSelect && deviceSelect.value ? deviceSelect.value : '';
+        }
+        function deviceLabel(device) {
+          if (!device) return 'unknown';
+          return (device.name || 'input') + (device.selector ? ' (' + device.selector + ')' : '');
+        }
+        function updateOverrideWarning(native) {
+          var override = selectedDeviceValue();
+          var selected = null;
+          var devices = native && native.availableInputDevices ? native.availableInputDevices : [];
+          if (override) {
+            selected = devices.filter(function(device) {
+              return device.selector === override || String(device.index) === String(override).replace(/^:/, '') || device.name === override;
+            })[0] || { name: override, selector: '' };
+          }
+          if (overrideWarningNode) {
+            overrideWarningNode.hidden = !override;
+            overrideWarningNode.textContent = override ? 'Override active: using ' + deviceLabel(selected) + ', not macOS default.' : '';
+          }
         }
         function findComposerMount() {
           var input = document.querySelector('textarea[placeholder*="TARX"], textarea[placeholder*="anything"], [contenteditable="true"][aria-label*="message" i], [contenteditable="true"]');
@@ -1319,9 +1344,15 @@ function createWindow() {
           var native = capabilities && capabilities.nativeCapture;
           var devices = native && native.availableInputDevices ? native.availableInputDevices : [];
           deviceSelect.innerHTML = '';
+          var defaultName = native && native.systemDefaultInput && native.systemDefaultInput.name ? native.systemDefaultInput.name : 'unknown';
+          var defaultSelector = native && native.selectedDevice && native.selectedDevice.source === 'macos_default_input' ? native.selectedDevice.selector : '';
+          var defaultOption = document.createElement('option');
+          defaultOption.value = '';
+          defaultOption.textContent = 'Use macOS Default Input' + (defaultName !== 'unknown' ? ' - ' + defaultName + (defaultSelector ? ' (' + defaultSelector + ')' : '') : '');
+          deviceSelect.appendChild(defaultOption);
           if (!devices.length) {
             var empty = document.createElement('option');
-            empty.value = '';
+            empty.value = '__missing__';
             empty.textContent = 'No AVFoundation inputs';
             deviceSelect.appendChild(empty);
           } else {
@@ -1332,10 +1363,11 @@ function createWindow() {
               deviceSelect.appendChild(option);
             });
           }
-          var selected = native && native.selectedDevice && native.selectedDevice.selector;
-          if (selected) deviceSelect.value = selected;
-          var defaultName = native && native.systemDefaultInput && native.systemDefaultInput.name ? native.systemDefaultInput.name : 'unknown';
-          setStatus('Default: ' + defaultName + ' · Native: ' + (native && native.available ? 'available' : 'blocked'));
+          var requested = native && native.selectedDevice && native.selectedDevice.requested;
+          deviceSelect.value = requested || '';
+          if (defaultNode) defaultNode.textContent = 'macOS default input: ' + defaultName + (defaultSelector ? ' ' + defaultSelector : '');
+          updateOverrideWarning(native);
+          setStatus('Mode: ' + (requested ? 'override' : 'macOS default input') + ' · Native: ' + (native && native.available ? 'available' : 'blocked'));
         }
         function refreshVoiceSettings() {
           setVoiceState(active ? 'listening' : 'blocked', active ? 'Listening' : 'Voice setup');
@@ -1417,6 +1449,14 @@ function createWindow() {
           });
         });
         refreshButton.addEventListener('click', refreshVoiceSettings);
+        deviceSelect.addEventListener('change', function() { updateOverrideWarning(capabilities && capabilities.nativeCapture); });
+        customInput.addEventListener('input', function() { updateOverrideWarning(capabilities && capabilities.nativeCapture); });
+        clearOverrideButton.addEventListener('click', function() {
+          if (customInput) customInput.value = '';
+          if (deviceSelect) deviceSelect.value = '';
+          updateOverrideWarning(capabilities && capabilities.nativeCapture);
+          setStatus('Override cleared. Voice will use macOS default input on next capture.');
+        });
         soundButton.addEventListener('click', function() { voice.openInputSettings(); });
         privacyButton.addEventListener('click', function() { voice.openMicrophonePrivacySettings(); });
         doctorButton.addEventListener('click', function() {
@@ -1425,7 +1465,7 @@ function createWindow() {
           if (commandNode) commandNode.textContent = 'Copied Voice Doctor command. Command execution is disabled from this app panel: ' + command;
         });
         copyCommandButton.addEventListener('click', function() {
-          var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && TARX_VOICE_NATIVE_CAPTURE=1 npm run qa:voice-native-stt';
+          var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && unset TARX_VOICE_NATIVE_CAPTURE_DEVICE && TARX_VOICE_NATIVE_CAPTURE=1 npm run qa:voice-native-stt';
           if (d.copyText) d.copyText(command);
           if (commandNode) commandNode.textContent = 'Copied native STT proof command: ' + command;
         });

@@ -39,6 +39,10 @@ for (const state of requiredStates) {
 record(checks, 'voice_cta_visible_in_composer', main.includes('tarx-native-voice-cta') && main.includes('tarx-voice-composer') && main.includes('findComposerMount'), null);
 record(checks, 'panel_opens_from_voice_cta', main.includes('panel.hidden = !panel.hidden') && main.includes('refreshVoiceSettings'), null);
 record(checks, 'device_inventory_renders', main.includes('availableInputDevices') && main.includes('No AVFoundation inputs'), null);
+record(checks, 'macos_default_input_mode_visible', main.includes('Use macOS Default Input') && main.includes('macOS default input'), null);
+record(checks, 'override_warning_visible_when_active', main.includes('Override active: using') && main.includes('not macOS default'), null);
+record(checks, 'clear_override_available', main.includes('Clear override') && main.includes('Override cleared'), null);
+record(checks, 'default_mode_does_not_send_selector', main.includes("deviceSelect.value = requested || ''") && main.includes("return deviceSelect && deviceSelect.value ? deviceSelect.value : ''"), null);
 record(checks, 'red_state_clear_for_razer_semantic_failure', main.includes('Razer Kiyo Pro') && main.includes('Whisper is not detecting clear speech'), null);
 record(checks, 'supercomputer_off_visible', main.includes("row('Supercomputer'") && main.includes("Supercomputer stay off"), null);
 record(checks, 'browser_fallback_off_visible', main.includes("row('Browser fallback'") && main.includes('Browser fallback and Supercomputer stay off'), null);
