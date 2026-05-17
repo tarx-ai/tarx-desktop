@@ -22,7 +22,13 @@
     "qa:local-operator-control-plane": "node scripts/qa-local-operator-control-plane.js",
     "qa:local-operator-footprint": "node scripts/qa-local-operator-footprint.js",
     "qa:voice-pronunciation-rule": "node scripts/qa-voice-pronunciation-rule.js",
-    "qa:voice-input-doctor": "node scripts/qa-voice-input-doctor.js"
+    "qa:voice-input-inventory": "node scripts/qa-voice-input-inventory.js",
+    "qa:voice-input-doctor": "node scripts/qa-voice-input-doctor.js",
+    "qa:voice-audio-diagnostics": "node scripts/qa-voice-audio-diagnostics.js",
+    "qa:voice-internal-beta-loop": "node scripts/qa-voice-internal-beta-loop.js",
+    "qa:voice-panel-state-machine": "node scripts/qa-voice-panel-state-machine.js",
+    "qa:voice-evidence-panel": "node scripts/qa-voice-evidence-panel.js",
+    "qa:voice-prime-readiness": "node scripts/qa-voice-prime-readiness.js"
   },
   "author": "TARXAN INC.",
   "license": "UNLICENSED",

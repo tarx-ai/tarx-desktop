@@ -1,5 +1,9 @@
 # Release Notes
 
+## 2026-05-16 - Voice Panel Hardening
+
+- Adds internal Voice panel state machine and evidence view for Prime voice testing. Shows mic/STT/Bridge/TTS blockers without enabling release voice, browser fallback, or Supercomputer.
+
 ## 2026-05-16 - Local Operator Control Plane
 
 - Adds hidden Local Operator readiness control plane behind internal flags. No models bundled. No runtime enabled by default.

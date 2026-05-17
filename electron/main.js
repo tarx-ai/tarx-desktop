@@ -49,6 +49,13 @@ const MAC_MICROPHONE_PRIVACY_SETTINGS_URL = 'x-apple.systempreferences:com.apple
 const VOICE_NATIVE_CAPTURE_SAMPLE_RATE = Number(process.env.TARX_VOICE_NATIVE_CAPTURE_SAMPLE_RATE || 16000);
 const VOICE_NATIVE_CAPTURE_MAX_MS = Number(process.env.TARX_VOICE_NATIVE_CAPTURE_MAX_MS || 15000);
 const VOICE_WHISPER_URL = process.env.TARX_WHISPER_URL || 'http://127.0.0.1:11447';
+const PRIME_VOICE_EVIDENCE_PATHS = {
+  inventory: '/Users/master/.tarx/runs/voice-input-inventory/latest.json',
+  doctor: '/Users/master/.tarx/runs/voice-input-doctor/latest.json',
+  nativeStt: '/Users/master/.tarx/runs/voice-native-stt/latest.json',
+  internalBetaLoop: '/Users/master/.tarx/runs/voice-internal-beta-loop/latest.json',
+  ttsPlayback: '/Users/master/.tarx/runs/voice-tts-playback/latest.json',
+};
 const VOICE_UX_STATES = {
   off: 'Voice off',
   permissionNeeded: 'Allow microphone access to talk to TARX.',
@@ -364,6 +371,122 @@ function voiceRuntimeCapabilities() {
   };
 }
 
+function readPrimeVoiceEvidenceFile(file) {
+  try {
+    if (!fs.existsSync(file)) return { file, ok: false, missing: true, json: null };
+    return { file, ok: true, missing: false, json: JSON.parse(fs.readFileSync(file, 'utf8')) };
+  } catch (error) {
+    return { file, ok: false, missing: false, error: error.message, json: null };
+  }
+}
+
+function derivePrimeVoicePanelState({ capabilities, evidence }) {
+  if (voiceNativeCaptureState.active) return 'capture_running';
+  const devices = capabilities?.nativeCapture?.availableInputDevices || [];
+  const stt = evidence?.nativeStt?.json || {};
+  const beta = evidence?.internalBetaLoop?.json || {};
+  const tts = evidence?.ttsPlayback?.json || {};
+  const audio = stt.audioStats || stt.freshCapture?.audioStats || {};
+  if (!devices.length) return 'no_input_devices';
+  if (beta.status === 'local_voice_internal_beta_green') return 'internal_loop_ready';
+  if (tts.missing || !tts.status) {
+    if (stt.bridge?.installedRuntimeAcceptedContracts === false) return 'bridge_contracts_missing';
+  }
+  if (stt.status === 'native_voice_stt_green' && stt.semanticSpeechGreen === true) return 'stt_green';
+  if (stt.status === 'native_voice_stt_route_green_semantic_speech_red') return 'stt_semantic_red';
+  if (stt.routeGreen === true) return 'stt_route_green';
+  if (audio.nonSilent === true) return 'capture_non_silent';
+  if (stt.firstBlocker === 'capture_silent' || audio.nonSilent === false) return 'capture_silent';
+  if (stt.status) return 'capture_complete';
+  if (devices.length === 1 && /razer kiyo pro/i.test(String(devices[0]?.name || ''))) return 'blocked_needs_mic_fix';
+  return 'input_selected';
+}
+
+function primeVoiceNextAction(state, evidence) {
+  const stt = evidence?.nativeStt?.json || {};
+  if (state === 'no_input_devices') return 'Open macOS Sound Input, connect/select a microphone, then Refresh Inputs.';
+  if (state === 'capture_running') return 'Speak clearly, then press Stop. Required phrase: TARS, what are we working on today?';
+  if (state === 'capture_silent') return 'Select a live microphone with a moving macOS input meter, then rerun native STT.';
+  if (state === 'capture_non_silent') return 'Run native STT proof with the required spoken phrase.';
+  if (state === 'stt_semantic_red') return 'Prime can capture audio, but Whisper is not detecting the required phrase. Select a different microphone in macOS Sound Input, then Refresh.';
+  if (state === 'stt_green') return 'Stop here for STT: Bridge voice endpoints and TTS playback proof must be green before full loop.';
+  if (state === 'bridge_contracts_missing') return 'Bridge voice runtime endpoints are missing or returning 404; restart/update Bridge only when safe.';
+  if (state === 'tts_missing') return 'Run Prime TTS playback proof; Daniel voice remains internal/unapproved.';
+  if (state === 'internal_loop_ready') return 'Internal local voice loop evidence is green. Keep release claims disabled.';
+  if (stt.firstBlocker) return `Resolve blocker: ${stt.firstBlocker}`;
+  return 'Run Voice Doctor, then run native STT with: TARS, what are we working on today?';
+}
+
+async function primeVoiceEvidenceSnapshot() {
+  const capabilities = voiceRuntimeCapabilities();
+  const evidence = Object.fromEntries(Object.entries(PRIME_VOICE_EVIDENCE_PATHS).map(([key, file]) => [key, readPrimeVoiceEvidenceFile(file)]));
+  const bridgeHealth = await probeLocalOperatorService('http://127.0.0.1:11440/health');
+  const ttsHealth = await probeLocalOperatorService('http://127.0.0.1:11446/health');
+  const bridgeCaptureContract = await requestBridgeJson('/v1/runtime/voice/capture-events', { method: 'GET', timeoutMs: 900 });
+  const bridgeSttContract = await requestBridgeJson('/v1/runtime/stt-results', { method: 'GET', timeoutMs: 900 });
+  const state = derivePrimeVoicePanelState({ capabilities, evidence });
+  const selectedDevice = capabilities.nativeCapture?.selectedDevice?.device
+    || evidence.nativeStt?.json?.freshCapture?.inventory?.selected
+    || evidence.nativeStt?.json?.captureEvent?.evidence?.selected_device
+    || null;
+  return {
+    ok: true,
+    schema: 'tarx-prime-voice-panel-evidence.v1',
+    ts: new Date().toISOString(),
+    states: [
+      'idle',
+      'inventory_loading',
+      'no_input_devices',
+      'input_selected',
+      'capture_running',
+      'capture_complete',
+      'capture_silent',
+      'capture_non_silent',
+      'stt_route_green',
+      'stt_semantic_red',
+      'stt_green',
+      'bridge_contracts_missing',
+      'tts_missing',
+      'internal_loop_ready',
+      'blocked_needs_mic_fix',
+    ],
+    state,
+    selectedDevice,
+    routeTruth: {
+      computer: true,
+      supercomputer: 'Off',
+      browserFallback: VOICE_BROWSER_FALLBACK_ENABLED ? 'On' : 'Off',
+      supercomputerUsed: false,
+      browserFallbackUsed: false,
+      productionVoiceReady: false,
+    },
+    capabilities,
+    evidence,
+    bridge: {
+      health: bridgeHealth,
+      captureEventsEndpoint: bridgeCaptureContract,
+      sttResultsEndpoint: bridgeSttContract,
+      contractsPresent: Boolean(bridgeCaptureContract.ok && bridgeSttContract.ok),
+      restartCommand: 'launchctl kickstart -k gui/$(id -u)/com.tarx.ops',
+      mutationPerformed: false,
+    },
+    tts: {
+      service: ttsHealth,
+      evidence: evidence.ttsPlayback,
+      danielApproved: false,
+      label: 'Daniel voice is internal/unapproved.',
+    },
+    commands: {
+      inventory: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-inventory',
+      doctor: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-doctor',
+      nativeStt: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && TARX_VOICE_NATIVE_CAPTURE=1 npm run qa:voice-native-stt',
+    },
+    requiredSpokenPhrase: 'TARS, what are we working on today?',
+    writtenDisplayPhrase: 'TARX, what are we working on today?',
+    nextAction: primeVoiceNextAction(state, evidence),
+  };
+}
+
 function createVoiceCaptureEvent({ source, sessionId, captureId, durationMs = 0, sampleRate = 16000 } = {}) {
   return {
     schema: 'tarx-voice-capture-event.v1',
@@ -457,17 +580,21 @@ function nativeInputSettingsHints() {
   };
 }
 
-function resolveNativeCaptureDevice() {
+function resolveNativeCaptureDevice(requestedOverride = '') {
   const listing = listNativeCaptureDevices();
   const defaultInput = macDefaultInputDevice();
-  const requested = VOICE_NATIVE_CAPTURE_DEVICE.trim();
+  const requested = String(requestedOverride || VOICE_NATIVE_CAPTURE_DEVICE || '').trim();
   if (requested) {
-    const match = listing.devices.find((device) => device.selector === requested || String(device.index) === requested.replace(/^:/, '') || device.name === requested || `:${device.name}` === requested);
+    const match = listing.devices.find((device) => device.name === requested)
+      || listing.devices.find((device) => device.selector === requested)
+      || listing.devices.find((device) => String(device.index) === requested.replace(/^:/, ''))
+      || null;
     return {
-      selector: match?.selector || requested,
+      selector: match?.selector || null,
       source: 'env_override',
       requested,
-      device: match || { selector: requested, name: requested, index: null },
+      requestedFound: Boolean(match),
+      device: match,
       defaultInput,
       availableDevices: listing.devices,
       settings: nativeInputSettingsHints(),
@@ -567,11 +694,12 @@ function readWavAudioStats(capturePath) {
   }
 }
 
-function startNativeCaptureProcess(captureEvent) {
+function startNativeCaptureProcess(captureEvent, requestedDevice = '') {
   const binary = findNativeCaptureBinary();
   if (!binary) throw new Error('native_capture_binary_missing');
-  const selectedDevice = resolveNativeCaptureDevice();
-  if (!selectedDevice.device && !selectedDevice.requested) throw new Error('native_capture_input_device_missing');
+  const selectedDevice = resolveNativeCaptureDevice(requestedDevice);
+  if (selectedDevice.requested && !selectedDevice.device) throw new Error('requested_avfoundation_input_not_found');
+  if (!selectedDevice.device) throw new Error('native_capture_input_device_missing');
   const capturePath = path.join(voiceCaptureDir(), `${captureEvent.capture_id}.wav`);
   const args = nativeCaptureArgs(capturePath, selectedDevice);
   const child = spawn(binary, args, { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -819,17 +947,494 @@ function createWindow() {
       html, body {
         background: var(--tarx-bg, #0A0A0D) !important;
       }
+      #tarx-native-voice-cta {
+        position: fixed;
+        right: 18px;
+        bottom: 18px;
+        z-index: 99999;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 38px;
+        max-width: min(320px, calc(100vw - 36px));
+        padding: 9px 12px;
+        border: 1px solid rgba(255,255,255,0.16);
+        border-radius: 8px;
+        background: rgba(10, 10, 13, 0.88);
+        color: #fff;
+        font: 500 13px/1.2 system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        box-shadow: 0 12px 30px rgba(0,0,0,0.26);
+        cursor: pointer;
+        -webkit-app-region: no-drag;
+        backdrop-filter: blur(14px);
+      }
+      #tarx-native-voice-cta.tarx-voice-composer {
+        position: static;
+        min-height: 32px;
+        height: 32px;
+        margin-left: 8px;
+        padding: 6px 10px;
+        box-shadow: none;
+        background: rgba(255,255,255,0.07);
+      }
+      #tarx-native-voice-cta:hover { background: rgba(20, 22, 28, 0.94); }
+      #tarx-native-voice-cta.tarx-voice-composer:hover { background: rgba(255,255,255,0.11); }
+      #tarx-native-voice-cta:disabled { opacity: 0.72; cursor: default; }
+      #tarx-native-voice-cta .tarx-voice-dot {
+        width: 8px;
+        height: 8px;
+        flex: 0 0 auto;
+        border-radius: 999px;
+        background: #8A93A3;
+      }
+      #tarx-native-voice-cta[data-state="listening"] .tarx-voice-dot { background: #22C55E; }
+      #tarx-native-voice-cta[data-state="blocked"] .tarx-voice-dot,
+      #tarx-native-voice-cta[data-state="error"] .tarx-voice-dot { background: #F97316; }
+      #tarx-native-voice-cta .tarx-voice-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #tarx-native-voice-panel {
+        position: fixed;
+        right: 18px;
+        bottom: 66px;
+        z-index: 99999;
+        width: min(360px, calc(100vw - 36px));
+        padding: 12px;
+        border: 1px solid rgba(255,255,255,0.16);
+        border-radius: 8px;
+        background: rgba(10, 10, 13, 0.94);
+        color: #fff;
+        box-shadow: 0 18px 46px rgba(0,0,0,0.34);
+        font: 13px/1.35 system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        -webkit-app-region: no-drag;
+        backdrop-filter: blur(16px);
+      }
+      #tarx-native-voice-panel.tarx-voice-panel-composer {
+        right: auto;
+        bottom: auto;
+      }
+      #tarx-native-voice-panel[hidden] { display: none; }
+      #tarx-native-voice-panel label {
+        display: block;
+        margin-bottom: 6px;
+        color: #AEB6C2;
+        font-size: 12px;
+      }
+      #tarx-native-voice-panel select,
+      #tarx-native-voice-panel input {
+        width: 100%;
+        min-height: 34px;
+        padding: 7px 8px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.16);
+        background: #111318;
+        color: #fff;
+        font: inherit;
+      }
+      #tarx-native-voice-panel .tarx-voice-row {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      #tarx-native-voice-panel button {
+        min-height: 34px;
+        padding: 7px 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.16);
+        background: #171A21;
+        color: #fff;
+        cursor: pointer;
+        font: inherit;
+      }
+      #tarx-native-voice-panel button:hover { background: #222632; }
+      #tarx-native-voice-panel button:disabled {
+        opacity: 0.52;
+        cursor: default;
+      }
+      #tarx-native-voice-panel .tarx-voice-primary {
+        background: #92B6DE;
+        border-color: #92B6DE;
+        color: #0A0A0D;
+        font-weight: 650;
+      }
+      #tarx-native-voice-panel .tarx-voice-primary:hover { background: #A8C6E7; }
+      #tarx-native-voice-panel .tarx-voice-status {
+        margin-top: 10px;
+        color: #AEB6C2;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      #tarx-native-voice-panel .tarx-voice-note {
+        margin-top: 8px;
+        color: #7D8795;
+        font-size: 12px;
+      }
+      #tarx-native-voice-panel .tarx-voice-state {
+        margin-top: 10px;
+        padding: 9px;
+        border: 1px solid rgba(255,255,255,0.14);
+        border-radius: 8px;
+        background: rgba(255,255,255,0.04);
+      }
+      #tarx-native-voice-panel .tarx-voice-state[data-tone="red"] {
+        border-color: rgba(249,115,22,0.52);
+        background: rgba(249,115,22,0.1);
+      }
+      #tarx-native-voice-panel .tarx-voice-state[data-tone="green"] {
+        border-color: rgba(34,197,94,0.44);
+        background: rgba(34,197,94,0.08);
+      }
+      #tarx-native-voice-panel .tarx-voice-kv,
+      #tarx-native-voice-panel .tarx-voice-evidence {
+        margin-top: 8px;
+        display: grid;
+        gap: 5px;
+        color: #AEB6C2;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      #tarx-native-voice-panel .tarx-voice-kv div,
+      #tarx-native-voice-panel .tarx-voice-evidence div {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      #tarx-native-voice-panel .tarx-voice-kv strong,
+      #tarx-native-voice-panel .tarx-voice-evidence strong {
+        color: #DDE5F0;
+        font-weight: 600;
+      }
+      #tarx-native-voice-panel .tarx-voice-command {
+        margin-top: 8px;
+        padding: 7px;
+        border-radius: 6px;
+        background: #080A0F;
+        color: #AEB6C2;
+        font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+        overflow-wrap: anywhere;
+      }
     `);
 
-    // ── JS: expose version only — sidebar logic handled in React (AppShell) ──
+    // ── JS: expose version and native Voice CTA ─────────────────────
     mainWindow.webContents.executeJavaScript(`
       (function() {
+        function installVoiceDesktop() {
         if (window.__tarxDesktopInjected) return;
-        window.__tarxDesktopInjected = true;
         var d = window.__TARX_DESKTOP__;
+        if (!d || !d.voice) {
+          window.__tarxDesktopVoiceRetryCount = (window.__tarxDesktopVoiceRetryCount || 0) + 1;
+          if (window.__tarxDesktopVoiceRetryCount < 40) setTimeout(installVoiceDesktop, 250);
+          return;
+        }
+        window.__tarxDesktopInjected = true;
         if (d && d.getVersion) {
           d.getVersion().then(function(v) { window.__TARX_VERSION = v; });
         }
+        if (document.getElementById('tarx-native-voice-cta')) return;
+        var voice = d.voice;
+        var button = document.createElement('button');
+        var panel = document.createElement('div');
+        var active = false;
+        var capabilities = null;
+        button.id = 'tarx-native-voice-cta';
+        button.type = 'button';
+        button.setAttribute('aria-label', 'Voice');
+        button.innerHTML = '<span class="tarx-voice-dot"></span><span class="tarx-voice-label">Voice</span>';
+        panel.id = 'tarx-native-voice-panel';
+        panel.hidden = true;
+        panel.innerHTML = '' +
+          '<label for="tarx-native-voice-device">Input</label>' +
+          '<select id="tarx-native-voice-device"></select>' +
+          '<label for="tarx-native-voice-custom" style="margin-top:10px">Override selector/name</label>' +
+          '<input id="tarx-native-voice-custom" placeholder=":0 or exact device name" />' +
+          '<div class="tarx-voice-row">' +
+          '  <button class="tarx-voice-primary" id="tarx-native-voice-start" type="button">Start</button>' +
+          '  <button id="tarx-native-voice-stop" type="button">Stop</button>' +
+          '  <button id="tarx-native-voice-refresh" type="button">Refresh</button>' +
+          '</div>' +
+          '<div class="tarx-voice-row">' +
+          '  <button id="tarx-native-voice-sound" type="button">Sound Input</button>' +
+          '  <button id="tarx-native-voice-privacy" type="button">Mic Privacy</button>' +
+          '</div>' +
+          '<div class="tarx-voice-row">' +
+          '  <button id="tarx-native-voice-doctor" type="button">Run Voice Doctor</button>' +
+          '  <button id="tarx-native-voice-copy-command" type="button">Copy QA command</button>' +
+          '</div>' +
+          '<div class="tarx-voice-state" id="tarx-native-voice-state" data-tone="neutral">' +
+          '  <strong id="tarx-native-voice-state-label">inventory_loading</strong>' +
+          '  <div id="tarx-native-voice-next">Loading voice state...</div>' +
+          '</div>' +
+          '<div class="tarx-voice-kv" id="tarx-native-voice-route-truth"></div>' +
+          '<div class="tarx-voice-evidence" id="tarx-native-voice-evidence">No voice evidence yet.</div>' +
+          '<div class="tarx-voice-command" id="tarx-native-voice-command">Command execution is disabled from this app panel.</div>' +
+          '<div class="tarx-voice-status" id="tarx-native-voice-status">Loading voice settings...</div>' +
+          '<div class="tarx-voice-note">Native capture only. Browser fallback and Supercomputer stay off.</div>';
+        var deviceSelect = panel.querySelector('#tarx-native-voice-device');
+        var customInput = panel.querySelector('#tarx-native-voice-custom');
+        var statusNode = panel.querySelector('#tarx-native-voice-status');
+        var startButton = panel.querySelector('#tarx-native-voice-start');
+        var stopButton = panel.querySelector('#tarx-native-voice-stop');
+        var refreshButton = panel.querySelector('#tarx-native-voice-refresh');
+        var soundButton = panel.querySelector('#tarx-native-voice-sound');
+        var privacyButton = panel.querySelector('#tarx-native-voice-privacy');
+        var doctorButton = panel.querySelector('#tarx-native-voice-doctor');
+        var copyCommandButton = panel.querySelector('#tarx-native-voice-copy-command');
+        var stateBox = panel.querySelector('#tarx-native-voice-state');
+        var stateLabel = panel.querySelector('#tarx-native-voice-state-label');
+        var nextNode = panel.querySelector('#tarx-native-voice-next');
+        var routeTruthNode = panel.querySelector('#tarx-native-voice-route-truth');
+        var evidenceNode = panel.querySelector('#tarx-native-voice-evidence');
+        var commandNode = panel.querySelector('#tarx-native-voice-command');
+        function setVoiceState(state, label) {
+          button.dataset.state = state || 'idle';
+          var labelNode = button.querySelector('.tarx-voice-label');
+          if (labelNode) labelNode.textContent = label || 'Voice';
+        }
+        function setStatus(text) {
+          if (statusNode) statusNode.textContent = text || '';
+        }
+        function escapeHtml(value) {
+          return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        }
+        function shortValue(value) {
+          var text = String(value == null || value === '' ? 'missing' : value);
+          return text.length > 180 ? text.slice(0, 177) + '...' : text;
+        }
+        function row(label, value) {
+          return '<div><strong>' + escapeHtml(label) + '</strong><span>' + escapeHtml(shortValue(value)) + '</span></div>';
+        }
+        function toneForState(state) {
+          if (state === 'stt_green' || state === 'internal_loop_ready') return 'green';
+          if (state === 'stt_semantic_red' || state === 'capture_silent' || state === 'no_input_devices' || state === 'blocked_needs_mic_fix' || state === 'bridge_contracts_missing' || state === 'tts_missing') return 'red';
+          return 'neutral';
+        }
+        function selectedEvidenceDevice(snapshot) {
+          var device = snapshot && snapshot.selectedDevice;
+          if (!device) return 'none';
+          return (device.name || 'input') + (device.selector ? ' (' + device.selector + ')' : '');
+        }
+        function renderPrimeEvidence(snapshot) {
+          if (!snapshot) {
+            if (evidenceNode) evidenceNode.textContent = 'No voice evidence yet.';
+            return;
+          }
+          var state = snapshot.state || 'idle';
+          if (stateBox) stateBox.dataset.tone = toneForState(state);
+          if (stateLabel) stateLabel.textContent = state;
+          if (nextNode) nextNode.textContent = snapshot.nextAction || 'Run Voice Doctor.';
+          if (routeTruthNode) {
+            routeTruthNode.innerHTML = ''
+              + row('Selected device', selectedEvidenceDevice(snapshot))
+              + row('Route', 'Computer')
+              + row('Supercomputer', snapshot.routeTruth && snapshot.routeTruth.supercomputer || 'Off')
+              + row('Browser fallback', snapshot.routeTruth && snapshot.routeTruth.browserFallback || 'Off');
+          }
+          var nativeStt = snapshot.evidence && snapshot.evidence.nativeStt && snapshot.evidence.nativeStt.json;
+          var inventory = snapshot.evidence && snapshot.evidence.inventory && snapshot.evidence.inventory.json;
+          var doctor = snapshot.evidence && snapshot.evidence.doctor && snapshot.evidence.doctor.json;
+          var tts = snapshot.evidence && snapshot.evidence.ttsPlayback && snapshot.evidence.ttsPlayback.json;
+          var audio = nativeStt && (nativeStt.audioStats || (nativeStt.freshCapture && nativeStt.freshCapture.audioStats)) || null;
+          var selected = nativeStt && nativeStt.captureEvent && nativeStt.captureEvent.evidence && nativeStt.captureEvent.evidence.selected_device;
+          var wav = nativeStt && (nativeStt.wavPath || (nativeStt.captureEvent && nativeStt.captureEvent.evidence && nativeStt.captureEvent.evidence.audio_ref));
+          var transcript = nativeStt && (nativeStt.rawTranscript || nativeStt.normalizedDisplayTranscript || (nativeStt.sttResult && nativeStt.sttResult.text));
+          if (evidenceNode) {
+            if (!nativeStt && !inventory && !doctor && !tts) {
+              evidenceNode.textContent = 'No voice evidence yet.';
+            } else {
+              evidenceNode.innerHTML = ''
+                + row('Inventory', inventory && inventory.status)
+                + row('Doctor', doctor && doctor.status)
+                + row('Native STT', nativeStt && nativeStt.status)
+                + row('First blocker', nativeStt && nativeStt.firstBlocker)
+                + row('Selected', selected ? (selected.name + ' ' + selected.selector) : selectedEvidenceDevice(snapshot))
+                + row('WAV', wav)
+                + row('RMS / peak / duration', audio ? ((audio.rms || 0) + ' / ' + (audio.peakAmplitude || 0) + ' / ' + (audio.duration_ms || audio.durationMs || 0) + 'ms') : 'missing')
+                + row('Transcript', transcript)
+                + row('TTS playback', tts && tts.status)
+                + row('Evidence JSON', snapshot.evidence && snapshot.evidence.nativeStt && snapshot.evidence.nativeStt.file);
+            }
+          }
+          var command = snapshot.commands && (state === 'stt_semantic_red' || state === 'capture_non_silent' ? snapshot.commands.nativeStt : snapshot.commands.doctor);
+          if (commandNode) commandNode.textContent = 'Command execution is disabled here. Copy/run: ' + (command || 'No command available.');
+          var devices = inventory && inventory.avFoundationInputs || [];
+          if (devices.length === 1 && /razer kiyo pro/i.test(String(devices[0].name || '')) && state === 'stt_semantic_red') {
+            setStatus('Prime can capture audio from Razer Kiyo Pro, but Whisper is not detecting clear speech. Select a different microphone in macOS Sound Input, then Refresh.');
+          }
+        }
+        function positionPanelNearButton() {
+          if (!button || !panel || panel.hidden) return;
+          var rect = button.getBoundingClientRect();
+          if (!button.classList.contains('tarx-voice-composer')) {
+            panel.classList.remove('tarx-voice-panel-composer');
+            panel.style.left = '';
+            panel.style.top = '';
+            return;
+          }
+          panel.classList.add('tarx-voice-panel-composer');
+          var panelWidth = Math.min(360, Math.max(260, window.innerWidth - 36));
+          var left = Math.max(18, Math.min(window.innerWidth - panelWidth - 18, rect.left));
+          var top = Math.max(18, rect.top - 330);
+          panel.style.width = panelWidth + 'px';
+          panel.style.left = left + 'px';
+          panel.style.top = top + 'px';
+        }
+        function selectedDeviceValue() {
+          var custom = customInput && customInput.value ? customInput.value.trim() : '';
+          if (custom) return custom;
+          return deviceSelect && deviceSelect.value ? deviceSelect.value : '';
+        }
+        function findComposerMount() {
+          var input = document.querySelector('textarea[placeholder*="TARX"], textarea[placeholder*="anything"], [contenteditable="true"][aria-label*="message" i], [contenteditable="true"]');
+          if (!input) return null;
+          var root = input;
+          for (var i = 0; i < 6 && root && root.parentElement; i += 1) {
+            root = root.parentElement;
+            var rows = Array.prototype.filter.call(root.querySelectorAll('div'), function(node) {
+              return node.querySelectorAll && node.querySelectorAll('button').length >= 2;
+            });
+            if (rows.length) return rows[rows.length - 1];
+          }
+          return null;
+        }
+        function mountVoiceButton() {
+          var mount = findComposerMount();
+          if (mount && button.parentElement !== mount) {
+            button.classList.add('tarx-voice-composer');
+            mount.appendChild(button);
+          } else if (!button.parentElement) {
+            button.classList.remove('tarx-voice-composer');
+            document.documentElement.appendChild(button);
+          }
+          positionPanelNearButton();
+        }
+        function renderCapabilities(next) {
+          capabilities = next || capabilities;
+          var native = capabilities && capabilities.nativeCapture;
+          var devices = native && native.availableInputDevices ? native.availableInputDevices : [];
+          deviceSelect.innerHTML = '';
+          if (!devices.length) {
+            var empty = document.createElement('option');
+            empty.value = '';
+            empty.textContent = 'No AVFoundation inputs';
+            deviceSelect.appendChild(empty);
+          } else {
+            devices.forEach(function(device) {
+              var option = document.createElement('option');
+              option.value = device.selector || String(device.index);
+              option.textContent = '[' + device.index + '] ' + device.name + ' (' + device.selector + ')';
+              deviceSelect.appendChild(option);
+            });
+          }
+          var selected = native && native.selectedDevice && native.selectedDevice.selector;
+          if (selected) deviceSelect.value = selected;
+          var defaultName = native && native.systemDefaultInput && native.systemDefaultInput.name ? native.systemDefaultInput.name : 'unknown';
+          setStatus('Default: ' + defaultName + ' · Native: ' + (native && native.available ? 'available' : 'blocked'));
+        }
+        function refreshVoiceSettings() {
+          setVoiceState(active ? 'listening' : 'blocked', active ? 'Listening' : 'Voice setup');
+          if (stateLabel) stateLabel.textContent = 'inventory_loading';
+          return Promise.all([
+            voice.getRuntimeCapabilities(),
+            voice.getPrimeEvidence ? voice.getPrimeEvidence() : Promise.resolve(null),
+          ]).then(function(results) {
+            var next = results[0];
+            var evidence = results[1];
+            renderCapabilities(next);
+            renderPrimeEvidence(evidence);
+            if (next && next.featureFlags && next.featureFlags.TARX_VOICE_NATIVE_CAPTURE) {
+              setVoiceState(active ? 'listening' : 'idle', active ? 'Listening' : 'Voice');
+            } else {
+              setVoiceState('blocked', 'Voice setup');
+            }
+            return next;
+          }).catch(function(error) {
+            setVoiceState('blocked', 'Voice setup');
+            setStatus('Unable to load voice settings: ' + (error && error.message ? error.message : 'unknown'));
+          });
+        }
+        function statusLabel(result) {
+          if (!result) return 'Voice';
+          if (result.label) return result.label;
+          if (result.state === 'listening') return 'Listening';
+          if (result.error) return 'Voice blocked';
+          return 'Voice';
+        }
+        refreshVoiceSettings();
+        if (voice.onStatus) {
+          voice.onStatus(function(status) {
+            if (!status) return;
+            if (status.state === 'listening') {
+              active = true;
+              setVoiceState('listening', 'Listening');
+            } else if (status.state === 'error') {
+              active = false;
+              setVoiceState('error', 'Voice blocked');
+            } else if (status.state === 'idle') {
+              active = false;
+              setVoiceState('idle', 'Voice');
+            }
+          });
+        }
+        button.addEventListener('click', function() {
+          panel.hidden = !panel.hidden;
+          if (!panel.hidden) refreshVoiceSettings();
+          positionPanelNearButton();
+        });
+        startButton.addEventListener('click', function() {
+          if (button.disabled) return;
+          button.disabled = true;
+          setVoiceState('idle', 'Starting...');
+          setStatus('Starting native capture...');
+          voice.startNativeCapture({ device: selectedDeviceValue() }).then(function(result) {
+            active = result && result.state === 'listening';
+            setVoiceState(active ? 'listening' : (result && result.error ? 'error' : 'blocked'), statusLabel(result));
+            setStatus(active ? 'Capturing: ' + (result.capture && result.capture.localPath ? result.capture.localPath : 'native WAV') : (result.error || result.reason || 'Native capture unavailable'));
+          }).catch(function() {
+            active = false;
+            setVoiceState('error', 'Voice blocked');
+            setStatus('Native capture failed');
+          }).finally(function() {
+            button.disabled = false;
+          });
+        });
+        stopButton.addEventListener('click', function() {
+          voice.stopNativeCapture().then(function(result) {
+            active = false;
+            setVoiceState(result && result.error ? 'error' : 'idle', result && result.error ? 'Voice blocked' : 'Voice');
+            setStatus(result && result.capture && result.capture.localPath ? 'Saved: ' + result.capture.localPath : 'Stopped');
+            refreshVoiceSettings();
+          }).catch(function(error) {
+            active = false;
+            setVoiceState('error', 'Voice blocked');
+            setStatus('Stop failed: ' + (error && error.message ? error.message : 'unknown'));
+          });
+        });
+        refreshButton.addEventListener('click', refreshVoiceSettings);
+        soundButton.addEventListener('click', function() { voice.openInputSettings(); });
+        privacyButton.addEventListener('click', function() { voice.openMicrophonePrivacySettings(); });
+        doctorButton.addEventListener('click', function() {
+          var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-doctor';
+          if (d.copyText) d.copyText(command);
+          if (commandNode) commandNode.textContent = 'Copied Voice Doctor command. Command execution is disabled from this app panel: ' + command;
+        });
+        copyCommandButton.addEventListener('click', function() {
+          var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && TARX_VOICE_NATIVE_CAPTURE=1 npm run qa:voice-native-stt';
+          if (d.copyText) d.copyText(command);
+          if (commandNode) commandNode.textContent = 'Copied native STT proof command: ' + command;
+        });
+        document.documentElement.appendChild(panel);
+        mountVoiceButton();
+        window.addEventListener('resize', positionPanelNearButton);
+        setInterval(mountVoiceButton, 1500);
+        }
+        installVoiceDesktop();
       })();
     `).catch(function() {});
   });
@@ -1534,6 +2139,7 @@ ipcMain.handle('tarx:voice-permission-status', () => getVoicePermissionStatus())
 ipcMain.handle('tarx:voice-request-permission', async () => requestVoicePermission());
 
 ipcMain.handle('tarx:voice-runtime-capabilities', () => voiceRuntimeCapabilities());
+ipcMain.handle('tarx:voice-prime-evidence', async () => primeVoiceEvidenceSnapshot());
 
 ipcMain.handle('tarx:voice-open-input-settings', async () => {
   await shell.openExternal(MAC_SOUND_INPUT_SETTINGS_URL);
@@ -1600,15 +2206,20 @@ ipcMain.handle('tarx:voice-native-capture-start', async (_event, payload = {}) =
     sampleRate: payload.sample_rate || VOICE_NATIVE_CAPTURE_SAMPLE_RATE,
   });
   let started;
+  const requestedDevice = payload.device || payload.selector || payload.inputDevice || '';
   try {
-    started = startNativeCaptureProcess(captureEvent);
+    started = startNativeCaptureProcess(captureEvent, requestedDevice);
   } catch (error) {
     return {
       ok: false,
       state: 'unavailable',
       label: VOICE_UX_STATES.unavailable,
       source: 'electron_native',
-      nativeCapture: nativeStatus,
+      requestedDevice: requestedDevice || null,
+      nativeCapture: {
+        ...nativeStatus,
+        selectedDevice: resolveNativeCaptureDevice(requestedDevice),
+      },
       routeTruth: voiceRuntimeCapabilities().routeTruth,
       error: error.message,
     };

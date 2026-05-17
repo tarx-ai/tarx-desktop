@@ -144,6 +144,7 @@ function createTarxVoiceBridge() {
   return {
     states: TARX_VOICE_UX_STATES,
     getRuntimeCapabilities: async () => ipcRenderer.invoke('tarx:voice-runtime-capabilities'),
+    getPrimeEvidence: async () => ipcRenderer.invoke('tarx:voice-prime-evidence'),
     startNativeCapture: async (payload) => ipcRenderer.invoke('tarx:voice-native-capture-start', payload || {}),
     stopNativeCapture: async () => ipcRenderer.invoke('tarx:voice-native-capture-stop'),
     emitCaptureEvent: async (payload) => ipcRenderer.invoke('tarx:voice-capture-event', payload || {}),
