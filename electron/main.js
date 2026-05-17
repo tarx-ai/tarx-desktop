@@ -46,13 +46,16 @@ const LOCAL_OPERATOR_FLAGS = {
 const VOICE_NATIVE_CAPTURE_DEVICE = process.env.TARX_VOICE_NATIVE_CAPTURE_DEVICE || '';
 const MAC_SOUND_INPUT_SETTINGS_URL = 'x-apple.systempreferences:com.apple.Sound-Settings.extension?input';
 const MAC_MICROPHONE_PRIVACY_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone';
+const MAC_BLUETOOTH_SETTINGS_URL = 'x-apple.systempreferences:com.apple.BluetoothSettings';
 const VOICE_NATIVE_CAPTURE_SAMPLE_RATE = Number(process.env.TARX_VOICE_NATIVE_CAPTURE_SAMPLE_RATE || 16000);
 const VOICE_NATIVE_CAPTURE_MAX_MS = Number(process.env.TARX_VOICE_NATIVE_CAPTURE_MAX_MS || 15000);
+const VOICE_PANEL_TEST_CAPTURE_MS = Number(process.env.TARX_VOICE_PANEL_TEST_CAPTURE_MS || 6500);
 const VOICE_WHISPER_URL = process.env.TARX_WHISPER_URL || 'http://127.0.0.1:11447';
 const PRIME_VOICE_EVIDENCE_PATHS = {
   inventory: '/Users/master/.tarx/runs/voice-input-inventory/latest.json',
   doctor: '/Users/master/.tarx/runs/voice-input-doctor/latest.json',
   nativeStt: '/Users/master/.tarx/runs/voice-native-stt/latest.json',
+  liveCalibration: '/Users/master/.tarx/runs/voice-live-calibration/latest.json',
   internalBetaLoop: '/Users/master/.tarx/runs/voice-internal-beta-loop/latest.json',
   ttsPlayback: '/Users/master/.tarx/runs/voice-tts-playback/latest.json',
 };
@@ -479,7 +482,8 @@ async function primeVoiceEvidenceSnapshot() {
     commands: {
       inventory: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-inventory',
       doctor: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-doctor',
-      nativeStt: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && TARX_VOICE_NATIVE_CAPTURE=1 npm run qa:voice-native-stt',
+      liveCalibration: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && unset TARX_VOICE_NATIVE_CAPTURE_DEVICE && npm run qa:voice-live-calibration',
+      nativeStt: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && unset TARX_VOICE_NATIVE_CAPTURE_DEVICE && TARX_VOICE_NATIVE_CAPTURE=1 npm run qa:voice-native-stt',
     },
     requiredSpokenPhrase: 'TARS, what are we working on today?',
     writtenDisplayPhrase: 'TARX, what are we working on today?',
@@ -765,6 +769,39 @@ function extractWhisperTranscript(payload, fallbackText = '') {
   ).trim();
 }
 
+function meaningfulVoiceTestTranscript(text = '') {
+  const normalized = String(text || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return /\b(tars|tarx)\b/.test(normalized) && /what.*working.*today|working.*on.*today|working.*for.*today/.test(normalized);
+}
+
+function classifyVoiceTestFailure({ audioStats, stt, bridge, selectedDevice }) {
+  const transcript = stt?.transcript || '';
+  if (!selectedDevice?.device) return 'no_input_devices';
+  if (!audioStats?.validWav || !audioStats.nonSilent) return 'capture_silent';
+  if (!stt || stt.error || stt.status === 0) return 'whisper_route_unavailable';
+  if (stt.blankAudio || !transcript) return 'stt_semantic_red';
+  if (!meaningfulVoiceTestTranscript(transcript)) return 'stt_semantic_red';
+  if (bridge && bridge.ok === false) return 'bridge_contracts_missing';
+  return 'stt_green';
+}
+
+function nextActionForVoiceTestState(state, inventory = null) {
+  const devices = inventory?.availableDevices || [];
+  const hasAirPods = devices.some((device) => /airpods/i.test(String(device.name || '')));
+  const selected = inventory?.device;
+  if (state === 'no_input_devices') return 'No microphone is visible to AVFoundation. Open Sound Input or Mic Privacy, select a microphone, then Refresh Inputs.';
+  if (!hasAirPods && selected && /razer kiyo pro/i.test(String(selected.name || ''))) {
+    return 'AirPods are connected, but not visible to TARX/AVFoundation. Select them in macOS Sound Input, reconnect Bluetooth, or use a wired/built-in mic.';
+  }
+  if (selected && /razer kiyo pro/i.test(String(selected.name || ''))) return 'Selected input is Razer Kiyo Pro. Use a known-good mic if Whisper keeps returning non-speech or unrelated audio.';
+  if (state === 'capture_silent') return 'Captured audio is silent. Check selected input, mic privacy, mute state, and macOS input meter.';
+  if (state === 'whisper_route_unavailable') return 'Whisper route is unavailable. Start local Whisper on 11447 before retesting.';
+  if (state === 'stt_semantic_red') return 'Captured audio was non-silent but transcript did not match the required phrase. Listen to the WAV and retest close to the mic.';
+  if (state === 'bridge_contracts_missing') return 'Bridge voice contracts are unavailable. Restart/update Prime Bridge before full loop testing.';
+  if (state === 'stt_green') return 'Native live STT passed. Bridge and TTS evidence are still required before internal loop.';
+  return 'Refresh inputs, select macOS default input, then Test Microphone.';
+}
+
 async function transcribeNativeCaptureFile(captureEvent, capturePath) {
   if (!capturePath || !fs.existsSync(capturePath)) {
     return { ok: false, error: 'capture_file_missing', transcript: '', audioBytes: 0 };
@@ -812,6 +849,260 @@ async function transcribeNativeCaptureFile(captureEvent, capturePath) {
     sttResult,
     bridge,
   };
+}
+
+function waitForProcessClose(child, timeoutMs) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (detail) => {
+      if (settled) return;
+      settled = true;
+      resolve(detail);
+    };
+    child.once('close', (code, signal) => finish({ code, signal, timedOut: false }));
+    child.once('error', (error) => finish({ code: null, signal: null, timedOut: false, error: error.message }));
+    setTimeout(() => {
+      if (!child.killed) child.kill('SIGINT');
+      setTimeout(() => finish({ code: null, signal: 'SIGINT', timedOut: true }), 1200);
+    }, timeoutMs);
+  });
+}
+
+function writeVoicePanelTestEvidence(result) {
+  const calibrationPath = PRIME_VOICE_EVIDENCE_PATHS.liveCalibration;
+  const nativeSttPath = PRIME_VOICE_EVIDENCE_PATHS.nativeStt;
+  fs.mkdirSync(path.dirname(calibrationPath), { recursive: true });
+  fs.mkdirSync(path.dirname(nativeSttPath), { recursive: true });
+  fs.writeFileSync(calibrationPath, `${JSON.stringify(result.calibrationEvidence, null, 2)}\n`);
+  fs.writeFileSync(nativeSttPath, `${JSON.stringify(result.nativeSttEvidence, null, 2)}\n`);
+}
+
+async function runVoicePanelMicrophoneTest(payload = {}) {
+  const requestedDevice = payload.device || payload.selector || payload.inputDevice || '';
+  const nativeStatus = nativeCaptureStatus();
+  const selectedDevice = resolveNativeCaptureDevice(requestedDevice);
+  const requiredSpokenPhrase = 'TARS, what are we working on today?';
+  const writtenDisplayPhrase = 'TARX, what are we working on today?';
+  const startedAt = Date.now();
+  const base = {
+    source: 'electron_voice_panel',
+    requiredSpokenPhrase,
+    writtenDisplayPhrase,
+    selectedDevice,
+    routeTruth: voiceRuntimeCapabilities().routeTruth,
+    guardrails: {
+      browserFallbackUsed: false,
+      supercomputerUsed: false,
+      productionVoiceReady: false,
+      transcriptMocked: false,
+      whisperBypassed: false,
+    },
+  };
+  if (requestedDevice && !selectedDevice.device) {
+    const state = 'no_input_devices';
+    const calibrationEvidence = {
+      schema: 'tarx-voice-live-calibration.v1',
+      ts: new Date().toISOString(),
+      ok: false,
+      status: 'voice_live_calibration_red',
+      firstBlocker: 'requested_avfoundation_input_not_found',
+      protocol: { mode: 'electron_panel_manual_single_attempt', syntheticAcousticLoopIsSeparate: true },
+      selectedMic: null,
+      inventory: selectedDevice,
+      summary: { passed: 0, failed: 1, passRate: 0, recommendation: nextActionForVoiceTestState(state, selectedDevice) },
+      evidencePath: PRIME_VOICE_EVIDENCE_PATHS.liveCalibration,
+      ...base,
+    };
+    const nativeSttEvidence = {
+      ts: new Date().toISOString(),
+      status: 'native_voice_stt_red',
+      ok: false,
+      routeGreen: false,
+      semanticSpeechGreen: false,
+      firstBlocker: 'requested_avfoundation_input_not_found',
+      ...base,
+    };
+    const result = { ok: false, state, nextAction: nextActionForVoiceTestState(state, selectedDevice), calibrationEvidence, nativeSttEvidence };
+    writeVoicePanelTestEvidence(result);
+    return result;
+  }
+  if (!nativeStatus.available || !selectedDevice.device) {
+    const state = 'no_input_devices';
+    const calibrationEvidence = {
+      schema: 'tarx-voice-live-calibration.v1',
+      ts: new Date().toISOString(),
+      ok: false,
+      status: 'voice_live_calibration_red',
+      firstBlocker: 'no_avfoundation_input_device',
+      protocol: { mode: 'electron_panel_manual_single_attempt', syntheticAcousticLoopIsSeparate: true },
+      selectedMic: null,
+      inventory: selectedDevice,
+      summary: { passed: 0, failed: 1, passRate: 0, recommendation: nextActionForVoiceTestState(state, selectedDevice) },
+      evidencePath: PRIME_VOICE_EVIDENCE_PATHS.liveCalibration,
+      ...base,
+    };
+    const nativeSttEvidence = {
+      ts: new Date().toISOString(),
+      status: 'native_voice_stt_red',
+      ok: false,
+      routeGreen: false,
+      semanticSpeechGreen: false,
+      firstBlocker: 'no_avfoundation_input_device',
+      ...base,
+    };
+    const result = { ok: false, state, nextAction: nextActionForVoiceTestState(state, selectedDevice), calibrationEvidence, nativeSttEvidence };
+    writeVoicePanelTestEvidence(result);
+    return result;
+  }
+  const permission = await requestVoicePermission();
+  if (permission?.status && permission.status !== 'granted' && permission.granted !== true) {
+    return {
+      ok: false,
+      state: 'permission_needed',
+      permission,
+      nextAction: 'Allow microphone access in macOS Privacy settings, then retest.',
+      ...base,
+    };
+  }
+  const captureEvent = createVoiceCaptureEvent({
+    source: 'electron_native',
+    sessionId: 'rt_electron_panel',
+    sampleRate: VOICE_NATIVE_CAPTURE_SAMPLE_RATE,
+  });
+  const started = startNativeCaptureProcess(captureEvent, requestedDevice);
+  const close = await waitForProcessClose(started.process, Number(payload.captureMs || VOICE_PANEL_TEST_CAPTURE_MS));
+  if (started.timeout) clearTimeout(started.timeout);
+  const capturePath = started.capturePath;
+  const audioStats = readWavAudioStats(capturePath);
+  const audioBytes = capturePath && fs.existsSync(capturePath) ? fs.statSync(capturePath).size : 0;
+  const finalCaptureEvent = {
+    ...captureEvent,
+    duration_ms: Math.max(1, Date.now() - startedAt),
+    vad: {
+      ...captureEvent.vad,
+      ended_at: new Date().toISOString(),
+      confidence: audioStats.nonSilent ? 0.8 : 0,
+    },
+    evidence: {
+      audio_ref: capturePath,
+      audio_bytes: audioBytes,
+      raw_audio_logged: false,
+      adapter: nativeStatus.adapter,
+      audio_stats: audioStats,
+      selected_device: selectedDevice.device,
+      system_default_input: selectedDevice.defaultInput,
+      input_status: audioStats.inputStatus,
+    },
+  };
+  const bridgeCapture = await emitVoiceCaptureEventToBridge(finalCaptureEvent);
+  const stt = audioStats.nonSilent
+    ? await transcribeNativeCaptureFile(finalCaptureEvent, capturePath).catch((error) => ({ ok: false, error: error.message, transcript: '', status: 0 }))
+    : null;
+  const state = classifyVoiceTestFailure({ audioStats, stt, bridge: bridgeCapture, selectedDevice });
+  const transcript = stt?.transcript || '';
+  const semanticSpeechGreen = state === 'stt_green';
+  const firstBlocker = semanticSpeechGreen ? null : state;
+  const attempt = {
+    attempt: 1,
+    wavPath: capturePath,
+    afplayCommand: capturePath ? `/usr/bin/afplay ${JSON.stringify(capturePath)}` : null,
+    duration_ms: audioStats.durationMs || audioStats.duration_ms || 0,
+    rms: audioStats.rms || 0,
+    peak: audioStats.peakAmplitude || 0,
+    transcript,
+    normalizedTranscript: String(transcript || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim(),
+    semanticScore: semanticSpeechGreen ? 1 : 0,
+    pass: semanticSpeechGreen,
+    failureClass: semanticSpeechGreen ? 'pass' : state,
+    nextAction: nextActionForVoiceTestState(state, selectedDevice),
+    audioStats,
+    stt,
+    captureExit: close,
+  };
+  const calibrationEvidence = {
+    schema: 'tarx-voice-live-calibration.v1',
+    ts: new Date().toISOString(),
+    ok: semanticSpeechGreen,
+    status: semanticSpeechGreen ? 'voice_live_calibration_green' : 'voice_live_calibration_red',
+    firstBlocker,
+    requiredSpokenPhrase,
+    writtenDisplayPhrase,
+    protocol: {
+      mode: 'electron_panel_manual_single_attempt',
+      acceptanceRule: 'Current panel test must transcribe the required phrase; full calibration can still require 3 of 5.',
+      captureSeconds: Math.round(Number(payload.captureMs || VOICE_PANEL_TEST_CAPTURE_MS) / 1000),
+      syntheticAcousticLoopIsSeparate: true,
+      syntheticLoopCannotUnlockLiveVoice: true,
+    },
+    attempts: [attempt],
+    summary: {
+      totalAttempts: 1,
+      passed: semanticSpeechGreen ? 1 : 0,
+      failed: semanticSpeechGreen ? 0 : 1,
+      passRate: semanticSpeechGreen ? 1 : 0,
+      fullPhraseAttemptPresent: semanticSpeechGreen,
+      failureClasses: semanticSpeechGreen ? {} : { [state]: 1 },
+      recommendation: nextActionForVoiceTestState(state, selectedDevice),
+    },
+    selectedMic: selectedDevice.device,
+    inventory: selectedDevice,
+    evidencePath: PRIME_VOICE_EVIDENCE_PATHS.liveCalibration,
+    guardrails: base.guardrails,
+  };
+  const nativeSttEvidence = {
+    ts: new Date().toISOString(),
+    status: semanticSpeechGreen ? 'native_voice_stt_green' : 'native_voice_stt_route_green_semantic_speech_red',
+    ok: semanticSpeechGreen,
+    routeGreen: Boolean(stt && stt.ok),
+    semanticSpeechGreen,
+    classification: semanticSpeechGreen ? 'green' : 'harness_red',
+    firstBlocker,
+    requiredSpokenPhrase,
+    writtenDisplayPhrase,
+    rawTranscript: transcript,
+    normalizedDisplayTranscript: transcript.replace(/\bTARS\b/gi, 'TARX'),
+    audioStats,
+    wavPath: capturePath,
+    playback: {
+      wavPath: capturePath,
+      command: capturePath ? `/usr/bin/afplay ${JSON.stringify(capturePath)}` : null,
+      selectedMic: selectedDevice.device,
+      transcript,
+      semanticSpeechGreen,
+    },
+    selectedEndpoint: `${VOICE_WHISPER_URL.replace(/\/$/, '')}/inference`,
+    captureEvent: finalCaptureEvent,
+    sttResult: stt?.sttResult || null,
+    stt,
+    bridge: {
+      capture: bridgeCapture,
+      stt: stt?.bridge || null,
+      installedRuntimeAcceptedContracts: Boolean(bridgeCapture?.ok && (semanticSpeechGreen ? stt?.bridge?.ok : true)),
+    },
+    privacy: {
+      supercomputerUsed: false,
+      browserFallbackUsed: false,
+      rawAudioLogged: false,
+      telemetryDefaultIncludesRawAudio: false,
+    },
+  };
+  const result = {
+    ok: semanticSpeechGreen,
+    state,
+    nextAction: nextActionForVoiceTestState(state, selectedDevice),
+    selectedDevice: selectedDevice.device,
+    wavPath: capturePath,
+    audioStats,
+    transcript,
+    bridgeCapture,
+    stt,
+    calibrationEvidence,
+    nativeSttEvidence,
+    routeTruth: base.routeTruth,
+  };
+  writeVoicePanelTestEvidence(result);
+  writeDiagnostic('latest-native-voice-panel-test.json', result);
+  return result;
 }
 
 async function waitForRuntime(timeoutMs = RUNTIME_START_TIMEOUT_MS) {
@@ -1154,11 +1445,13 @@ function createWindow() {
           '<div class="tarx-voice-row">' +
           '  <button class="tarx-voice-primary" id="tarx-native-voice-start" type="button">Start</button>' +
           '  <button id="tarx-native-voice-stop" type="button">Stop</button>' +
+          '  <button class="tarx-voice-primary" id="tarx-native-voice-test" type="button">Test Microphone</button>' +
           '  <button id="tarx-native-voice-refresh" type="button">Refresh</button>' +
           '  <button id="tarx-native-voice-clear-override" type="button">Clear override</button>' +
           '</div>' +
           '<div class="tarx-voice-row">' +
           '  <button id="tarx-native-voice-sound" type="button">Sound Input</button>' +
+          '  <button id="tarx-native-voice-bluetooth" type="button">Bluetooth</button>' +
           '  <button id="tarx-native-voice-privacy" type="button">Mic Privacy</button>' +
           '</div>' +
           '<div class="tarx-voice-row">' +
@@ -1181,9 +1474,11 @@ function createWindow() {
         var overrideWarningNode = panel.querySelector('#tarx-native-voice-override-warning');
         var startButton = panel.querySelector('#tarx-native-voice-start');
         var stopButton = panel.querySelector('#tarx-native-voice-stop');
+        var testButton = panel.querySelector('#tarx-native-voice-test');
         var refreshButton = panel.querySelector('#tarx-native-voice-refresh');
         var clearOverrideButton = panel.querySelector('#tarx-native-voice-clear-override');
         var soundButton = panel.querySelector('#tarx-native-voice-sound');
+        var bluetoothButton = panel.querySelector('#tarx-native-voice-bluetooth');
         var privacyButton = panel.querySelector('#tarx-native-voice-privacy');
         var doctorButton = panel.querySelector('#tarx-native-voice-doctor');
         var copyCommandButton = panel.querySelector('#tarx-native-voice-copy-command');
@@ -1243,22 +1538,25 @@ function createWindow() {
               + row('Browser fallback', snapshot.routeTruth && snapshot.routeTruth.browserFallback || 'Off');
           }
           var nativeStt = snapshot.evidence && snapshot.evidence.nativeStt && snapshot.evidence.nativeStt.json;
+          var liveCalibration = snapshot.evidence && snapshot.evidence.liveCalibration && snapshot.evidence.liveCalibration.json;
           var inventory = snapshot.evidence && snapshot.evidence.inventory && snapshot.evidence.inventory.json;
           var doctor = snapshot.evidence && snapshot.evidence.doctor && snapshot.evidence.doctor.json;
           var tts = snapshot.evidence && snapshot.evidence.ttsPlayback && snapshot.evidence.ttsPlayback.json;
-          var audio = nativeStt && (nativeStt.audioStats || (nativeStt.freshCapture && nativeStt.freshCapture.audioStats)) || null;
+          var liveAttempt = liveCalibration && liveCalibration.attempts && liveCalibration.attempts[0];
+          var audio = nativeStt && (nativeStt.audioStats || (nativeStt.freshCapture && nativeStt.freshCapture.audioStats)) || liveAttempt && liveAttempt.audioStats || null;
           var selected = nativeStt && nativeStt.captureEvent && nativeStt.captureEvent.evidence && nativeStt.captureEvent.evidence.selected_device;
-          var wav = nativeStt && (nativeStt.wavPath || (nativeStt.captureEvent && nativeStt.captureEvent.evidence && nativeStt.captureEvent.evidence.audio_ref));
-          var transcript = nativeStt && (nativeStt.rawTranscript || nativeStt.normalizedDisplayTranscript || (nativeStt.sttResult && nativeStt.sttResult.text));
+          var wav = nativeStt && (nativeStt.wavPath || (nativeStt.captureEvent && nativeStt.captureEvent.evidence && nativeStt.captureEvent.evidence.audio_ref)) || liveAttempt && liveAttempt.wavPath;
+          var transcript = nativeStt && (nativeStt.rawTranscript || nativeStt.normalizedDisplayTranscript || (nativeStt.sttResult && nativeStt.sttResult.text)) || liveAttempt && liveAttempt.transcript;
           if (evidenceNode) {
-            if (!nativeStt && !inventory && !doctor && !tts) {
+            if (!nativeStt && !liveCalibration && !inventory && !doctor && !tts) {
               evidenceNode.textContent = 'No voice evidence yet.';
             } else {
               evidenceNode.innerHTML = ''
                 + row('Inventory', inventory && inventory.status)
                 + row('Doctor', doctor && doctor.status)
+                + row('Live calibration', liveCalibration && liveCalibration.status)
                 + row('Native STT', nativeStt && nativeStt.status)
-                + row('First blocker', nativeStt && nativeStt.firstBlocker)
+                + row('First blocker', (nativeStt && nativeStt.firstBlocker) || (liveCalibration && liveCalibration.firstBlocker))
                 + row('Selected', selected ? (selected.name + ' ' + selected.selector) : selectedEvidenceDevice(snapshot))
                 + row('WAV', wav)
                 + row('RMS / peak / duration', audio ? ((audio.rms || 0) + ' / ' + (audio.peakAmplitude || 0) + ' / ' + (audio.duration_ms || audio.durationMs || 0) + 'ms') : 'missing')
@@ -1367,6 +1665,11 @@ function createWindow() {
           deviceSelect.value = requested || '';
           if (defaultNode) defaultNode.textContent = 'macOS default input: ' + defaultName + (defaultSelector ? ' ' + defaultSelector : '');
           updateOverrideWarning(native);
+          var hasAirPods = devices.some(function(device) { return /airpods/i.test(device.name || ''); });
+          if (!hasAirPods && defaultName !== 'unknown' && /airpods/i.test(defaultName) && statusNode) {
+            statusNode.textContent = 'AirPods are connected, but not visible to TARX/AVFoundation. Select them in macOS Sound Input, reconnect Bluetooth, or use a wired/built-in mic.';
+            return;
+          }
           setStatus('Mode: ' + (requested ? 'override' : 'macOS default input') + ' · Native: ' + (native && native.available ? 'available' : 'blocked'));
         }
         function refreshVoiceSettings() {
@@ -1448,6 +1751,27 @@ function createWindow() {
             setStatus('Stop failed: ' + (error && error.message ? error.message : 'unknown'));
           });
         });
+        testButton.addEventListener('click', function() {
+          if (testButton.disabled) return;
+          testButton.disabled = true;
+          setVoiceState('capture_running', 'Testing...');
+          if (stateLabel) stateLabel.textContent = 'capture_running';
+          setStatus('Speak now: TARS, what are we working on today?');
+          if (commandNode) commandNode.textContent = 'Capturing locally from Electron. Browser fallback and Supercomputer remain off.';
+          voice.testMicrophone({ device: selectedDeviceValue() }).then(function(result) {
+            var passed = result && result.state === 'stt_green';
+            setVoiceState(passed ? 'idle' : 'blocked', passed ? 'Voice' : 'Voice blocked');
+            if (stateLabel) stateLabel.textContent = result && result.state ? result.state : 'stt_semantic_red';
+            setStatus(result && result.nextAction ? result.nextAction : 'Test complete.');
+            return refreshVoiceSettings();
+          }).catch(function(error) {
+            setVoiceState('error', 'Voice blocked');
+            if (stateLabel) stateLabel.textContent = 'blocked_needs_mic_fix';
+            setStatus('Microphone test failed: ' + (error && error.message ? error.message : 'unknown'));
+          }).finally(function() {
+            testButton.disabled = false;
+          });
+        });
         refreshButton.addEventListener('click', refreshVoiceSettings);
         deviceSelect.addEventListener('change', function() { updateOverrideWarning(capabilities && capabilities.nativeCapture); });
         customInput.addEventListener('input', function() { updateOverrideWarning(capabilities && capabilities.nativeCapture); });
@@ -1458,6 +1782,7 @@ function createWindow() {
           setStatus('Override cleared. Voice will use macOS default input on next capture.');
         });
         soundButton.addEventListener('click', function() { voice.openInputSettings(); });
+        bluetoothButton.addEventListener('click', function() { voice.openBluetoothSettings(); });
         privacyButton.addEventListener('click', function() { voice.openMicrophonePrivacySettings(); });
         doctorButton.addEventListener('click', function() {
           var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-doctor';
@@ -2180,6 +2505,7 @@ ipcMain.handle('tarx:voice-request-permission', async () => requestVoicePermissi
 
 ipcMain.handle('tarx:voice-runtime-capabilities', () => voiceRuntimeCapabilities());
 ipcMain.handle('tarx:voice-prime-evidence', async () => primeVoiceEvidenceSnapshot());
+ipcMain.handle('tarx:voice-test-microphone', async (_event, payload = {}) => runVoicePanelMicrophoneTest(payload));
 
 ipcMain.handle('tarx:voice-open-input-settings', async () => {
   await shell.openExternal(MAC_SOUND_INPUT_SETTINGS_URL);
@@ -2189,6 +2515,11 @@ ipcMain.handle('tarx:voice-open-input-settings', async () => {
 ipcMain.handle('tarx:voice-open-microphone-privacy-settings', async () => {
   await shell.openExternal(MAC_MICROPHONE_PRIVACY_SETTINGS_URL);
   return { ok: true, url: MAC_MICROPHONE_PRIVACY_SETTINGS_URL };
+});
+
+ipcMain.handle('tarx:voice-open-bluetooth-settings', async () => {
+  await shell.openExternal(MAC_BLUETOOTH_SETTINGS_URL);
+  return { ok: true, url: MAC_BLUETOOTH_SETTINGS_URL };
 });
 
 ipcMain.handle('tarx:local-operator-control-plane', async () => localOperatorControlPlaneState());

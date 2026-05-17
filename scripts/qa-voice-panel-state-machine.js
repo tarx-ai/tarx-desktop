@@ -43,6 +43,9 @@ record(checks, 'macos_default_input_mode_visible', main.includes('Use macOS Defa
 record(checks, 'override_warning_visible_when_active', main.includes('Override active: using') && main.includes('not macOS default'), null);
 record(checks, 'clear_override_available', main.includes('Clear override') && main.includes('Override cleared'), null);
 record(checks, 'default_mode_does_not_send_selector', main.includes("deviceSelect.value = requested || ''") && main.includes("return deviceSelect && deviceSelect.value ? deviceSelect.value : ''"), null);
+record(checks, 'test_microphone_button_runs_electron_path', main.includes('Test Microphone') && main.includes('voice.testMicrophone') && main.includes("ipcMain.handle('tarx:voice-test-microphone'"), null);
+record(checks, 'bluetooth_settings_shortcut_visible', main.includes('Bluetooth') && main.includes('tarx:voice-open-bluetooth-settings'), null);
+record(checks, 'airpods_not_visible_guidance', main.includes('AirPods are connected, but not visible to TARX/AVFoundation'), null);
 record(checks, 'red_state_clear_for_razer_semantic_failure', main.includes('Razer Kiyo Pro') && main.includes('Whisper is not detecting clear speech'), null);
 record(checks, 'supercomputer_off_visible', main.includes("row('Supercomputer'") && main.includes("Supercomputer stay off"), null);
 record(checks, 'browser_fallback_off_visible', main.includes("row('Browser fallback'") && main.includes('Browser fallback and Supercomputer stay off'), null);

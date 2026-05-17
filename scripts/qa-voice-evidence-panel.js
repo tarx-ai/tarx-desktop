@@ -13,6 +13,7 @@ const evidencePaths = {
   inventory: '/Users/master/.tarx/runs/voice-input-inventory/latest.json',
   doctor: '/Users/master/.tarx/runs/voice-input-doctor/latest.json',
   nativeStt: '/Users/master/.tarx/runs/voice-native-stt/latest.json',
+  liveCalibration: '/Users/master/.tarx/runs/voice-live-calibration/latest.json',
   ttsPlayback: '/Users/master/.tarx/runs/voice-tts-playback/latest.json',
 };
 
@@ -37,6 +38,8 @@ record(checks, 'rms_peak_duration_rendered', main.includes("row('RMS / peak / du
 record(checks, 'transcript_rendered', main.includes("row('Transcript'"), null);
 record(checks, 'first_blocker_rendered', main.includes("row('First blocker'"), null);
 record(checks, 'selected_device_rendered', main.includes("row('Selected'"), null);
+record(checks, 'live_calibration_rendered', main.includes("row('Live calibration'") && main.includes('liveCalibration'), null);
+record(checks, 'test_microphone_writes_evidence', main.includes('writeVoicePanelTestEvidence') && main.includes('electron_panel_manual_single_attempt'), null);
 record(checks, 'json_path_rendered', main.includes("row('Evidence JSON'"), null);
 record(checks, 'bridge_and_tts_readiness_in_snapshot', main.includes('bridgeCaptureContract') && main.includes('ttsHealth') && main.includes('danielApproved: false'), null);
 

@@ -145,12 +145,14 @@ function createTarxVoiceBridge() {
     states: TARX_VOICE_UX_STATES,
     getRuntimeCapabilities: async () => ipcRenderer.invoke('tarx:voice-runtime-capabilities'),
     getPrimeEvidence: async () => ipcRenderer.invoke('tarx:voice-prime-evidence'),
+    testMicrophone: async (payload) => ipcRenderer.invoke('tarx:voice-test-microphone', payload || {}),
     startNativeCapture: async (payload) => ipcRenderer.invoke('tarx:voice-native-capture-start', payload || {}),
     stopNativeCapture: async () => ipcRenderer.invoke('tarx:voice-native-capture-stop'),
     emitCaptureEvent: async (payload) => ipcRenderer.invoke('tarx:voice-capture-event', payload || {}),
     permissionStatus: async () => ipcRenderer.invoke('tarx:voice-permission-status'),
     requestPermission: async () => ipcRenderer.invoke('tarx:voice-request-permission'),
     openInputSettings: async () => ipcRenderer.invoke('tarx:voice-open-input-settings'),
+    openBluetoothSettings: async () => ipcRenderer.invoke('tarx:voice-open-bluetooth-settings'),
     openMicrophonePrivacySettings: async () => ipcRenderer.invoke('tarx:voice-open-microphone-privacy-settings'),
     listInputDevices: async () => {
       if (!navigator.mediaDevices?.enumerateDevices) return [];
