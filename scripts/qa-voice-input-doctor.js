@@ -73,7 +73,17 @@ const systemInputs = parseSystemAudio(system.stdout || system.stderr || '');
 const defaultInput = systemInputs.find((device) => device.defaultInput) || null;
 const defaultAvMatch = defaultInput ? avDevices.find((device) => device.name.toLowerCase() === defaultInput.name.toLowerCase()) : null;
 const latest = latestSilentEvidence();
-const recentSilent = latest.some((entry) => entry.firstBlocker === 'capture_silent' || entry.audioStats?.inputStatus === 'silent_or_disconnected' || entry.audioStats?.rms === 0 || entry.attempts?.some((attempt) => attempt.audioStats?.rms === 0 && attempt.audioStats?.peakAmplitude === 0));
+const latestNativeStt = latest.find((entry) => entry.file.endsWith('/voice-native-stt/latest.json')) || null;
+const latestNativeNonSilent = latestNativeStt?.audioStats?.nonSilent === true
+  || (latestNativeStt?.audioStats?.rms > 0 && latestNativeStt?.audioStats?.peakAmplitude > 0);
+const recentSilent = latestNativeStt
+  ? !latestNativeNonSilent && (
+    latestNativeStt.firstBlocker === 'capture_silent'
+    || latestNativeStt.audioStats?.inputStatus === 'silent_or_disconnected'
+    || latestNativeStt.audioStats?.rms === 0
+  )
+  : latest.some((entry) => entry.attempts?.some((attempt) => attempt.audioStats?.rms === 0 && attempt.audioStats?.peakAmplitude === 0));
+const latestSemanticRed = latestNativeStt?.status === 'native_voice_stt_route_green_semantic_speech_red';
 const disconnectedLikely = Boolean(defaultInput && !defaultAvMatch) || recentSilent;
 const checks = [
   { name: 'ffmpeg_avfoundation_available', pass: /AVFoundation audio devices:/i.test((av.stdout || '') + (av.stderr || '')) && avDevices.length > 0, detail: { ffmpeg, avExitOk: av.ok, avDevices } },
@@ -95,9 +105,15 @@ const result = {
   defaultAvMatch,
   volumeSettings: (volume.stdout || volume.stderr || '').trim(),
   latestSilentEvidence: latest,
-  diagnosis: disconnectedLikely ? 'default_input_or_avfoundation_input_is_stale_silent_or_disconnected' : 'input_path_available_pending_live_capture',
+  diagnosis: disconnectedLikely
+    ? 'default_input_or_avfoundation_input_is_stale_silent_or_disconnected'
+    : latestSemanticRed
+      ? 'input_path_available_but_required_phrase_not_transcribed'
+      : 'input_path_available_pending_live_capture',
   nextFix: disconnectedLikely
     ? 'Open macOS System Settings > Sound > Input, select a connected live microphone, verify input meter moves, then rerun spoken native STT.'
+    : latestSemanticRed
+      ? 'Stop background audio, speak the required TARS phrase close to the selected microphone, then rerun native STT.'
     : 'Rerun spoken native STT proof with the TARS phrase.',
   settingsUrls: {
     soundInput: 'x-apple.systempreferences:com.apple.Sound-Settings.extension?input',

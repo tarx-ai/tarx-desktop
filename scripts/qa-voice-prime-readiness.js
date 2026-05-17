@@ -16,7 +16,10 @@ function readJson(file) {
   }
 }
 
-function requestJson(port, pathname, method = 'GET', timeoutMs = 900) {
+function requestJson(port, pathname, options = {}) {
+  const method = options.method || 'GET';
+  const timeoutMs = options.timeoutMs || 2500;
+  const payload = options.body ? JSON.stringify(options.body) : '';
   return new Promise((resolve) => {
     const req = http.request({
       hostname: '127.0.0.1',
@@ -24,7 +27,10 @@ function requestJson(port, pathname, method = 'GET', timeoutMs = 900) {
       path: pathname,
       method,
       timeout: timeoutMs,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
+      },
     }, (res) => {
       let text = '';
       res.setEncoding('utf8');
@@ -40,6 +46,7 @@ function requestJson(port, pathname, method = 'GET', timeoutMs = 900) {
       req.destroy();
       resolve({ ok: false, status: 0, error: 'timeout' });
     });
+    if (payload) req.write(payload);
     req.end();
   });
 }
@@ -55,9 +62,54 @@ function record(checks, name, pass, detail = null) {
   const ttsEvidence = readJson('/Users/master/.tarx/runs/voice-tts-playback/latest.json');
   const controlPlane = readJson('/Users/master/.tarx/runs/local-operator-control-plane/latest.json');
 
+  const bridgeCaptureProbe = {
+    schema: 'tarx-voice-capture-event.v1',
+    session_id: 'qa_prime_readiness',
+    capture_id: `vc_readiness_${Date.now()}`,
+    source: 'electron_native',
+    sample_rate: 16000,
+    duration_ms: 1000,
+    vad: {
+      started_at: new Date(Date.now() - 1000).toISOString(),
+      ended_at: new Date().toISOString(),
+      confidence: 0.8,
+    },
+    privacy: { local_only: true, supercomputer_used: false },
+    evidence: {
+      audio_ref: sttEvidence.json?.wavPath || 'readiness-probe.wav',
+      audio_bytes: sttEvidence.json?.audioStats?.fileSize || 44,
+      raw_audio_logged: false,
+    },
+  };
+  const bridgeSttProbe = {
+    schema: 'tarx-stt-result.v1',
+    session_id: 'qa_prime_readiness',
+    capture_id: bridgeCaptureProbe.capture_id,
+    transcript_id: `stt_readiness_${Date.now()}`,
+    model: 'whisper-base.en-int8',
+    text: sttEvidence.json?.rawTranscript || '',
+    confidence: 0,
+    latency_ms: 1,
+    local_only: true,
+    route: { local_only: true, supercomputer_used: false },
+    evidence: {
+      audio_ref: sttEvidence.json?.wavPath || 'readiness-probe.wav',
+      audio_bytes: sttEvidence.json?.audioStats?.fileSize || 44,
+      raw_audio_logged: false,
+      endpoint: sttEvidence.json?.selectedEndpoint || 'http://127.0.0.1:11447/inference',
+      route_role: 'whisper_cpp',
+    },
+  };
+
   const bridgeHealth = await requestJson(11440, '/health');
-  const bridgeCaptureEndpoint = await requestJson(11440, '/v1/runtime/voice/capture-events');
-  const bridgeSttEndpoint = await requestJson(11440, '/v1/runtime/stt-results');
+  const bridgeCaptureEndpoint = await requestJson(11440, '/v1/runtime/voice/capture-events', {
+    method: 'POST',
+    body: bridgeCaptureProbe,
+  });
+  const bridgeSttEndpoint = await requestJson(11440, '/v1/runtime/stt-results', {
+    method: 'POST',
+    body: bridgeSttProbe,
+  });
   const whisperHealth = await requestJson(11447, '/health');
   const ttsHealth = await requestJson(11446, '/health');
 
@@ -95,6 +147,9 @@ function record(checks, name, pass, detail = null) {
     captureEndpoint: bridgeCaptureEndpoint,
     sttEndpoint: bridgeSttEndpoint,
     restartOrUpdateLikelyNeeded: !bridgeContracts,
+    installedBridgeArtifact: '/Users/master/.tarx/servers/tarx-ops/dist/bridge.js',
+    sourceBridgeArtifact: '/Users/master/Desktop/TARX/Repos - active/tarx-ops/dist/bridge.js',
+    safeRestartCommand: 'launchctl kickstart -k gui/$(id -u)/com.tarx.bridge',
   });
   record(checks, 'whisper_service_reachable', whisperHealth.ok, whisperHealth);
   record(checks, 'tts_service_running', ttsHealth.ok, ttsHealth);
@@ -110,7 +165,7 @@ function record(checks, name, pass, detail = null) {
     ok: failed.length === 0,
     status: failed.length === 0 ? 'prime_voice_internal_loop_ready' : 'prime_voice_internal_loop_blocked',
     firstBlocker: failed[0]?.name || null,
-    recommendation: failed.length === 0 ? 'INTERNAL_VOICE_LOOP_READY' : 'MERGE_VOICE_PANEL_HARDENING',
+    recommendation: failed.length === 0 ? 'INTERNAL_VOICE_LOOP_READY' : 'STILL_BLOCKED',
     checks,
     evidence: {
       inventory: inventory.file,

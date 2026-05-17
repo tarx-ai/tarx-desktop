@@ -44,6 +44,9 @@ record(checks, 'override_warning_visible_when_active', main.includes('Override a
 record(checks, 'clear_override_available', main.includes('Clear override') && main.includes('Override cleared'), null);
 record(checks, 'default_mode_does_not_send_selector', main.includes("deviceSelect.value = requested || ''") && main.includes("return deviceSelect && deviceSelect.value ? deviceSelect.value : ''"), null);
 record(checks, 'test_microphone_button_runs_electron_path', main.includes('Test Microphone') && main.includes('voice.testMicrophone') && main.includes("ipcMain.handle('tarx:voice-test-microphone'"), null);
+record(checks, 'ask_tarx_manual_voice_internal_flagged', main.includes('Ask TARX') && main.includes('voice.askManualInternal') && main.includes('TARX_VOICE_MANUAL_INTERNAL'), null);
+record(checks, 'mediadevices_spike_internal_flagged', main.includes('MediaDevices Spike') && main.includes('runMediaDevicesSpike') && main.includes('TARX_VOICE_MEDIADEVICES_INTERNAL'), null);
+record(checks, 'pipecat_spike_internal_flagged', main.includes('Pipecat Spike') && main.includes('runPipecatSpike') && main.includes('TARX_VOICE_PIPECAT_INTERNAL'), null);
 record(checks, 'bluetooth_settings_shortcut_visible', main.includes('Bluetooth') && main.includes('tarx:voice-open-bluetooth-settings'), null);
 record(checks, 'airpods_not_visible_guidance', main.includes('AirPods are connected, but not visible to TARX/AVFoundation'), null);
 record(checks, 'red_state_clear_for_razer_semantic_failure', main.includes('Razer Kiyo Pro') && main.includes('Whisper is not detecting clear speech'), null);

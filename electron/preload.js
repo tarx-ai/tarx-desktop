@@ -85,6 +85,19 @@ function createTarxVoiceBridge() {
     return data;
   }
 
+  async function listMediaDevicesInputs() {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices.filter((device) => device.kind === 'audioinput').map((device, index) => ({
+      index,
+      id: device.deviceId,
+      label: device.label,
+      groupId: device.groupId,
+      kind: device.kind,
+      default: index === 0 || device.deviceId === 'default',
+    }));
+  }
+
   function startLevelMeter(mediaStream) {
     try {
       audioContext = new AudioContext();
@@ -159,6 +172,8 @@ function createTarxVoiceBridge() {
     getRuntimeCapabilities: async () => ipcRenderer.invoke('tarx:voice-runtime-capabilities'),
     getPrimeEvidence: async () => ipcRenderer.invoke('tarx:voice-prime-evidence'),
     testMicrophone: async (payload) => ipcRenderer.invoke('tarx:voice-test-microphone', payload || {}),
+    askManualInternal: async (payload) => ipcRenderer.invoke('tarx:voice-manual-internal-ask', payload || {}),
+    runPipecatSpike: async () => ipcRenderer.invoke('tarx:voice-pipecat-spike-run'),
     startNativeCapture: async (payload) => ipcRenderer.invoke('tarx:voice-native-capture-start', payload || {}),
     stopNativeCapture: async () => ipcRenderer.invoke('tarx:voice-native-capture-stop'),
     emitCaptureEvent: async (payload) => ipcRenderer.invoke('tarx:voice-capture-event', payload || {}),
@@ -168,14 +183,103 @@ function createTarxVoiceBridge() {
     openBluetoothSettings: async () => ipcRenderer.invoke('tarx:voice-open-bluetooth-settings'),
     openMicrophonePrivacySettings: async () => ipcRenderer.invoke('tarx:voice-open-microphone-privacy-settings'),
     listInputDevices: async () => {
-      if (!navigator.mediaDevices?.enumerateDevices) return [];
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      return devices.filter((device) => device.kind === 'audioinput').map((device) => ({
-        id: device.deviceId,
-        label: device.label,
-        groupId: device.groupId,
-        kind: device.kind,
-      }));
+      return listMediaDevicesInputs();
+    },
+    runMediaDevicesSpike: async ({ durationMs = 1800, deviceId = '' } = {}) => {
+      const capabilities = await ipcRenderer.invoke('tarx:voice-runtime-capabilities').catch(() => null);
+      if (!capabilities?.featureFlags?.TARX_VOICE_MEDIADEVICES_INTERNAL) {
+        return ipcRenderer.invoke('tarx:voice-mediadevices-spike-evidence', {
+          ok: false,
+          firstBlocker: 'TARX_VOICE_MEDIADEVICES_INTERNAL_disabled',
+        });
+      }
+      if (!navigator.mediaDevices?.getUserMedia || !navigator.mediaDevices?.enumerateDevices) {
+        return ipcRenderer.invoke('tarx:voice-mediadevices-spike-evidence', {
+          ok: false,
+          firstBlocker: 'mediadevices_unavailable',
+        });
+      }
+      let before = [];
+      try { before = await listMediaDevicesInputs(); } catch {}
+      let spikeStream = null;
+      let spikeContext = null;
+      let spikeRecorder = null;
+      let spikeChunks = [];
+      let sampleCount = 0;
+      let sumLevel = 0;
+      let peakLevel = 0;
+      try {
+        const audio = deviceId ? { deviceId: { exact: deviceId } } : true;
+        spikeStream = await navigator.mediaDevices.getUserMedia({ audio });
+        const after = await listMediaDevicesInputs().catch(() => before);
+        const track = spikeStream.getAudioTracks()[0] || null;
+        const settings = track?.getSettings?.() || {};
+        spikeContext = new AudioContext();
+        const source = spikeContext.createMediaStreamSource(spikeStream);
+        const spikeAnalyser = spikeContext.createAnalyser();
+        spikeAnalyser.fftSize = 512;
+        source.connect(spikeAnalyser);
+        const data = new Uint8Array(spikeAnalyser.fftSize);
+        const levelTimer = setInterval(() => {
+          spikeAnalyser.getByteTimeDomainData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i += 1) {
+            const v = (data[i] - 128) / 128;
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / data.length);
+          sumLevel += rms;
+          sampleCount += 1;
+          if (rms > peakLevel) peakLevel = rms;
+        }, 80);
+        const mimeType = MediaRecorder.isTypeSupported?.('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+        spikeRecorder = new MediaRecorder(spikeStream, { mimeType });
+        spikeRecorder.ondataavailable = (event) => { if (event.data?.size) spikeChunks.push(event.data); };
+        const stopped = new Promise((resolve) => {
+          spikeRecorder.onstop = () => resolve();
+        });
+        spikeRecorder.start(250);
+        await new Promise((resolve) => setTimeout(resolve, Math.max(500, Math.min(Number(durationMs) || 1800, 4000))));
+        spikeRecorder.stop();
+        await stopped;
+        clearInterval(levelTimer);
+        const blob = new Blob(spikeChunks, { type: spikeRecorder.mimeType || mimeType });
+        const selected = after.find((device) => device.id === settings.deviceId) || after[0] || null;
+        const avgLevel = sampleCount ? sumLevel / sampleCount : 0;
+        return ipcRenderer.invoke('tarx:voice-mediadevices-spike-evidence', {
+          ok: blob.size > 0,
+          firstBlocker: blob.size > 0 ? null : 'empty_audio_blob',
+          devicesBeforePermission: before,
+          devicesAfterPermission: after,
+          selectedDevice: selected,
+          trackSettings: settings,
+          capture: {
+            durationMs: Number(durationMs) || 1800,
+            mimeType: blob.type,
+            bytes: blob.size,
+            rmsApprox: avgLevel,
+            peakApprox: peakLevel,
+            nonSilentLikely: avgLevel > 0.003 || peakLevel > 0.03,
+            rawAudioLogged: false,
+            audioBlobPersisted: false,
+          },
+        });
+      } catch (error) {
+        const detail = voiceErrorPayload(error, 'mediadevices_spike_failed');
+        return ipcRenderer.invoke('tarx:voice-mediadevices-spike-evidence', {
+          ok: false,
+          firstBlocker: detail.message,
+          error: detail.message,
+          errorDetail: detail,
+          devicesBeforePermission: before,
+        });
+      } finally {
+        if (spikeRecorder && spikeRecorder.state !== 'inactive') {
+          try { spikeRecorder.stop(); } catch {}
+        }
+        if (spikeContext) spikeContext.close().catch(() => {});
+        if (spikeStream) spikeStream.getTracks().forEach((track) => track.stop());
+      }
     },
     startListening: async () => {
       const capabilities = await ipcRenderer.invoke('tarx:voice-runtime-capabilities').catch(() => null);

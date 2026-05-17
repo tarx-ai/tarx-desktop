@@ -6,7 +6,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
-const { spawn, execFileSync } = require('child_process');
+const { spawn, spawnSync, execFileSync } = require('child_process');
 
 const isDev = process.env.NODE_ENV === 'development';
 const SAFE_MODE = process.env.TARX_SAFE_MODE === '1' || process.argv.includes('--tarx-safe-mode');
@@ -36,9 +36,15 @@ const UPDATE_DOWNLOAD_STALL_MS = 20_000;
 const RESPONSIVE_CHROME_BREAKPOINT = 1100;
 const VOICE_NATIVE_CAPTURE_ENABLED = process.env.TARX_VOICE_NATIVE_CAPTURE === '1';
 const VOICE_BROWSER_FALLBACK_ENABLED = process.env.TARX_VOICE_BROWSER_FALLBACK === '1';
+const VOICE_MANUAL_INTERNAL_ENABLED = process.env.TARX_VOICE_MANUAL_INTERNAL === '1';
+const VOICE_MEDIADEVICES_INTERNAL_ENABLED = process.env.TARX_VOICE_MEDIADEVICES_INTERNAL === '1';
+const VOICE_PIPECAT_INTERNAL_ENABLED = process.env.TARX_VOICE_PIPECAT_INTERNAL === '1';
 const LOCAL_OPERATOR_FLAGS = {
   TARX_VOICE_NATIVE_CAPTURE: VOICE_NATIVE_CAPTURE_ENABLED,
   TARX_VOICE_BROWSER_FALLBACK: VOICE_BROWSER_FALLBACK_ENABLED,
+  TARX_VOICE_MANUAL_INTERNAL: VOICE_MANUAL_INTERNAL_ENABLED,
+  TARX_VOICE_MEDIADEVICES_INTERNAL: VOICE_MEDIADEVICES_INTERNAL_ENABLED,
+  TARX_VOICE_PIPECAT_INTERNAL: VOICE_PIPECAT_INTERNAL_ENABLED,
   TARX_VOICE_LOCAL_PACK: process.env.TARX_VOICE_LOCAL_PACK === '1',
   TARX_VISION_LOCAL_PACK: process.env.TARX_VISION_LOCAL_PACK === '1',
   TARX_ACTION_PROPOSALS: process.env.TARX_ACTION_PROPOSALS === '1',
@@ -58,6 +64,9 @@ const PRIME_VOICE_EVIDENCE_PATHS = {
   doctor: '/Users/master/.tarx/runs/voice-input-doctor/latest.json',
   nativeStt: '/Users/master/.tarx/runs/voice-native-stt/latest.json',
   liveCalibration: '/Users/master/.tarx/runs/voice-live-calibration/latest.json',
+  manualLoop: '/Users/master/.tarx/runs/voice-manual-loop/latest.json',
+  mediaDevicesSpike: '/Users/master/.tarx/runs/voice-mediadevices-spike/latest.json',
+  pipecatSpike: '/Users/master/.tarx/runs/voice-pipecat-spike/latest.json',
   internalBetaLoop: '/Users/master/.tarx/runs/voice-internal-beta-loop/latest.json',
   ttsPlayback: '/Users/master/.tarx/runs/voice-tts-playback/latest.json',
 };
@@ -532,6 +541,10 @@ function runtimeLogPath() {
 function nodePath() {
   const bundled = path.join(userHome(), '.local', 'node', 'bin', 'node');
   if (fs.existsSync(bundled)) return bundled;
+  const homebrew = '/opt/homebrew/bin/node';
+  if (fs.existsSync(homebrew)) return homebrew;
+  const usrLocal = '/usr/local/bin/node';
+  if (fs.existsSync(usrLocal)) return usrLocal;
   return process.execPath;
 }
 
@@ -596,8 +609,12 @@ function voiceRuntimeCapabilities() {
   return {
     ok: true,
     featureFlags: {
+      TARX_LOCAL_OPERATOR_BETA: LOCAL_OPERATOR_FLAGS.TARX_LOCAL_OPERATOR_BETA,
       TARX_VOICE_NATIVE_CAPTURE: VOICE_NATIVE_CAPTURE_ENABLED,
       TARX_VOICE_BROWSER_FALLBACK: VOICE_BROWSER_FALLBACK_ENABLED,
+      TARX_VOICE_MANUAL_INTERNAL: VOICE_MANUAL_INTERNAL_ENABLED,
+      TARX_VOICE_MEDIADEVICES_INTERNAL: VOICE_MEDIADEVICES_INTERNAL_ENABLED,
+      TARX_VOICE_PIPECAT_INTERNAL: VOICE_PIPECAT_INTERNAL_ENABLED,
     },
     sources: {
       production: VOICE_NATIVE_CAPTURE_ENABLED ? 'electron_native' : null,
@@ -608,6 +625,10 @@ function voiceRuntimeCapabilities() {
       supercomputerAllowed: false,
       supercomputerUsed: false,
       browserCaptureIsFallback: true,
+      manualVoiceRequiresWakeWord: false,
+      wakeWordVoiceBlocked: true,
+      mediaDevicesProductPathDraft: true,
+      pipecatOrchestrationDraft: true,
     },
     states: VOICE_UX_STATES,
     nativeCapture: nativeCaptureStatus(),
@@ -634,9 +655,11 @@ function derivePrimeVoicePanelState({ capabilities, evidence }) {
   const stt = evidence?.nativeStt?.json || {};
   const beta = evidence?.internalBetaLoop?.json || {};
   const tts = evidence?.ttsPlayback?.json || {};
+  const manualLoop = evidence?.manualLoop?.json || {};
   const audio = stt.audioStats || stt.freshCapture?.audioStats || {};
   if (!devices.length) return 'no_input_devices';
   if (beta.status === 'local_voice_internal_beta_green') return 'internal_loop_ready';
+  if (manualLoop.status === 'voice_manual_loop_green') return 'internal_loop_ready';
   if (tts.missing || !tts.status) {
     if (stt.bridge?.installedRuntimeAcceptedContracts === false) return 'bridge_contracts_missing';
   }
@@ -652,6 +675,7 @@ function derivePrimeVoicePanelState({ capabilities, evidence }) {
 
 function primeVoiceNextAction(state, evidence) {
   const stt = evidence?.nativeStt?.json || {};
+  const manualLoop = evidence?.manualLoop?.json || {};
   if (state === 'no_input_devices') return 'Open macOS Sound Input, connect/select a microphone, then Refresh Inputs.';
   if (state === 'capture_running') return 'Speak clearly, then press Stop. Required phrase: TARS, what are we working on today?';
   if (state === 'capture_silent') return 'Select a live microphone with a moving macOS input meter, then rerun native STT.';
@@ -660,6 +684,7 @@ function primeVoiceNextAction(state, evidence) {
   if (state === 'stt_green') return 'Stop here for STT: Bridge voice endpoints and TTS playback proof must be green before full loop.';
   if (state === 'bridge_contracts_missing') return 'Bridge voice runtime endpoints are missing or returning 404; restart/update Bridge only when safe.';
   if (state === 'tts_missing') return 'Run Prime TTS playback proof; Daniel voice remains internal/unapproved.';
+  if (state === 'internal_loop_ready' && manualLoop.status === 'voice_manual_loop_green') return 'Manual Voice internal loop is green. Wake-word and public release remain blocked.';
   if (state === 'internal_loop_ready') return 'Internal local voice loop evidence is green. Keep release claims disabled.';
   if (stt.firstBlocker) return `Resolve blocker: ${stt.firstBlocker}`;
   return 'Run Voice Doctor, then run native STT with: TARS, what are we working on today?';
@@ -827,6 +852,21 @@ function nativeInputSettingsHints() {
     microphonePrivacy: MAC_MICROPHONE_PRIVACY_SETTINGS_URL,
     guidance: 'Use macOS System Settings to select a connected microphone and allow TARX microphone access.',
   };
+}
+
+async function openMacSettingsUrl(url) {
+  try {
+    await shell.openExternal(url);
+    return { ok: true, method: 'shell.openExternal', url };
+  } catch (error) {
+    try {
+      const opened = spawn('/usr/bin/open', [url], { detached: true, stdio: 'ignore' });
+      opened.unref();
+      return { ok: true, method: '/usr/bin/open', url, shellError: error.message };
+    } catch (fallbackError) {
+      return { ok: false, url, error: error.message, fallbackError: fallbackError.message };
+    }
+  }
 }
 
 function resolveNativeCaptureDevice(requestedOverride = '') {
@@ -1019,6 +1059,12 @@ function meaningfulVoiceTestTranscript(text = '') {
   return /\b(tars|tarx)\b/.test(normalized) && /what.*working.*today|working.*on.*today|working.*for.*today/.test(normalized);
 }
 
+function meaningfulManualVoiceRequest(text = '') {
+  const normalized = String(text || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return /what.*working.*(on|for).*today|working.*(on|for).*today/.test(normalized)
+    || normalized.length >= 8 && !/^\[(blank_audio|music)\]$/i.test(String(text || '').trim());
+}
+
 function classifyVoiceTestFailure({ audioStats, stt, bridge, selectedDevice }) {
   const transcript = stt?.transcript || '';
   if (!selectedDevice?.device) return 'no_input_devices';
@@ -1113,6 +1159,52 @@ function waitForProcessClose(child, timeoutMs) {
   });
 }
 
+function requestTtsWav(text, { timeoutMs = 60000 } = {}) {
+  return new Promise((resolve) => {
+    const endpoint = process.env.TARX_TTS_URL || 'http://127.0.0.1:11446/v1/tts';
+    const parsed = new URL(endpoint);
+    const payload = JSON.stringify({
+      text,
+      voice: process.env.TARX_TTS_VOICE || 'am_adam',
+      speed: 1.0,
+      lang: 'en-us',
+    });
+    const chunks = [];
+    const req = http.request({
+      hostname: parsed.hostname,
+      port: parsed.port,
+      path: parsed.pathname,
+      method: 'POST',
+      timeout: timeoutMs,
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        const contentType = String(res.headers['content-type'] || '');
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          contentType,
+          endpoint,
+          buffer,
+          text: /^text|json|html/i.test(contentType) ? buffer.toString('utf8').slice(0, 500) : '',
+        });
+      });
+    });
+    req.on('error', (error) => resolve({ ok: false, status: 0, endpoint, error: error.message, buffer: Buffer.alloc(0) }));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ ok: false, status: 0, endpoint, error: 'timeout', buffer: Buffer.alloc(0) });
+    });
+    req.write(payload);
+    req.end();
+  });
+}
+
 function writeVoicePanelTestEvidence(result) {
   const calibrationPath = PRIME_VOICE_EVIDENCE_PATHS.liveCalibration;
   const nativeSttPath = PRIME_VOICE_EVIDENCE_PATHS.nativeStt;
@@ -1120,6 +1212,118 @@ function writeVoicePanelTestEvidence(result) {
   fs.mkdirSync(path.dirname(nativeSttPath), { recursive: true });
   fs.writeFileSync(calibrationPath, `${JSON.stringify(result.calibrationEvidence, null, 2)}\n`);
   fs.writeFileSync(nativeSttPath, `${JSON.stringify(result.nativeSttEvidence, null, 2)}\n`);
+}
+
+function manualVoiceAnswerFromEvidence(transcript = '') {
+  const readiness = readPrimeVoiceEvidenceFile('/Users/master/.tarx/runs/voice-prime-readiness/latest.json').json;
+  const manualLoop = readPrimeVoiceEvidenceFile(PRIME_VOICE_EVIDENCE_PATHS.manualLoop).json;
+  const runtimeSpine = readPrimeVoiceEvidenceFile('/Users/master/.tarx/runs/runtime-spine-readiness/latest.json').json;
+  const vision = readPrimeVoiceEvidenceFile('/Users/master/.tarx/runs/vision-freshness/latest.json').json;
+  const action = readPrimeVoiceEvidenceFile('/Users/master/.tarx/runs/action-safety-gate/latest.json').json;
+  const pipecat = readPrimeVoiceEvidenceFile(PRIME_VOICE_EVIDENCE_PATHS.pipecatSpike).json;
+  const status = readiness?.status || manualLoop?.status || 'internal manual voice testing';
+  const runtimeStatus = runtimeSpine?.status || 'runtime spine evidence pending';
+  const visionStatus = vision?.status || 'vision evidence pending';
+  const actionStatus = action?.status || 'action safety evidence pending';
+  const pipecatStatus = pipecat?.status || 'pipecat evidence pending';
+  const lower = String(transcript || '').toLowerCase();
+  if (/supercomputer/.test(lower)) {
+    return 'No. Supercomputer is off and requires explicit approval before any hosted route. Current route truth is Computer local.';
+  }
+  if (/\b(act|click|type|control|computer)\b/.test(lower)) {
+    return `Computer Use execution is disabled. TARX can make proposal-only suggestions from fresh Vision grounding; action safety is ${actionStatus}.`;
+  }
+  if (/\b(secret|password|api key|token|credential|vault)\b/.test(lower)) {
+    return 'Secrets, passwords, API keys, tokens, and credential-like material go to protected secrets or Vault workflows, not ordinary memory.';
+  }
+  if (/route truth|route/.test(lower)) {
+    return 'Route truth is Computer local. Browser fallback is off. Supercomputer is off. Raw audio is not logged.';
+  }
+  if (/blocked|blocker/.test(lower)) {
+    return `Current blockers: wake-word voice is blocked, production voice is blocked, Pipecat is ${pipecatStatus}, Vision is ${visionStatus}, and runtime spine is ${runtimeStatus}.`;
+  }
+  if (/next|should.*do/.test(lower)) {
+    return 'Next: keep Manual Voice internal, fix remaining runtime parity if degraded, improve wake-word STT separately, and do not enable Computer Use execution.';
+  }
+  if (/what.*working.*(on|for).*today|working.*(on|for).*today/i.test(transcript)) {
+    return [
+      'Today: TARX runtime spine and Manual Voice.',
+      `Manual Voice is ${manualLoop?.status || 'pending'}.`,
+      `Runtime spine is ${runtimeStatus}.`,
+      'Wake-word and production voice remain blocked.',
+      'Supercomputer is off.',
+    ].join(' ');
+  }
+  return [
+    'I heard your manual voice request.',
+    'I am answering from local Prime state.',
+    'Manual voice is internal only.',
+    `Runtime spine status is ${runtimeStatus}.`,
+    'Wake-word and production voice remain blocked.',
+    'Supercomputer is off and Computer Use execution is disabled.',
+  ].join(' ');
+}
+
+function writeVoiceManualLoopEvidence(result) {
+  const file = PRIME_VOICE_EVIDENCE_PATHS.manualLoop;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(result, null, 2)}\n`);
+}
+
+function writeMediaDevicesSpikeEvidence(payload = {}) {
+  const file = PRIME_VOICE_EVIDENCE_PATHS.mediaDevicesSpike;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const result = {
+    schema: 'tarx-voice-mediadevices-spike.v1',
+    ts: new Date().toISOString(),
+    ok: Boolean(payload.ok),
+    status: payload.ok ? 'voice_mediadevices_spike_green' : 'voice_mediadevices_spike_red',
+    firstBlocker: payload.ok ? null : (payload.firstBlocker || payload.error || 'mediadevices_spike_failed'),
+    mode: 'electron_renderer_mediadevices_internal_spike',
+    featureFlag: 'TARX_VOICE_MEDIADEVICES_INTERNAL',
+    featureFlagEnabled: VOICE_MEDIADEVICES_INTERNAL_ENABLED,
+    routeTruth: {
+      computer: true,
+      supercomputer: 'Off',
+      browserFallback: 'Off',
+      productRoute: false,
+      qaFallback: false,
+      rawAudioLogged: false,
+      audioBlobPersisted: false,
+    },
+    ...payload,
+    evidencePath: file,
+  };
+  fs.writeFileSync(file, `${JSON.stringify(result, null, 2)}\n`);
+  return result;
+}
+
+function writePipecatSpikeEvidence(payload = {}) {
+  const file = PRIME_VOICE_EVIDENCE_PATHS.pipecatSpike;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const result = {
+    schema: 'tarx-voice-pipecat-spike.v1',
+    ts: new Date().toISOString(),
+    ok: payload.status === 'voice_pipecat_spike_green',
+    status: payload.status || 'voice_pipecat_spike_blocked',
+    serviceStatus: payload.serviceStatus || 'pipecat_spike_scaffolded_not_running',
+    firstBlocker: payload.firstBlocker || 'pipecat_dependency_missing',
+    featureFlag: 'TARX_VOICE_PIPECAT_INTERNAL',
+    featureFlagEnabled: VOICE_PIPECAT_INTERNAL_ENABLED,
+    routeTruth: {
+      computer: true,
+      supercomputer: 'Off',
+      supercomputerUsed: false,
+      browserFallback: 'Off',
+      browserFallbackUsed: false,
+      rawAudioLogged: false,
+      ...payload.routeTruth,
+    },
+    ...payload,
+    evidencePath: file,
+  };
+  fs.writeFileSync(file, `${JSON.stringify(result, null, 2)}\n`);
+  return result;
 }
 
 async function runVoicePanelMicrophoneTest(payload = {}) {
@@ -1347,6 +1551,139 @@ async function runVoicePanelMicrophoneTest(payload = {}) {
   };
   writeVoicePanelTestEvidence(result);
   writeDiagnostic('latest-native-voice-panel-test.json', result);
+  return result;
+}
+
+async function runManualVoiceInternal(payload = {}) {
+  const flags = {
+    TARX_LOCAL_OPERATOR_BETA: LOCAL_OPERATOR_FLAGS.TARX_LOCAL_OPERATOR_BETA,
+    TARX_VOICE_MANUAL_INTERNAL: VOICE_MANUAL_INTERNAL_ENABLED,
+    TARX_VOICE_NATIVE_CAPTURE: VOICE_NATIVE_CAPTURE_ENABLED,
+  };
+  const flagReady = flags.TARX_LOCAL_OPERATOR_BETA && flags.TARX_VOICE_MANUAL_INTERNAL && flags.TARX_VOICE_NATIVE_CAPTURE;
+  if (!flagReady) {
+    return {
+      ok: false,
+      status: 'voice_manual_loop_blocked',
+      firstBlocker: 'manual_voice_internal_feature_flag_required',
+      flags,
+      routeTruth: voiceRuntimeCapabilities().routeTruth,
+      guardrails: {
+        productionVoiceReady: false,
+        wakeWordModeEnabled: false,
+        alwaysOnListeningEnabled: false,
+        browserFallbackUsed: false,
+        supercomputerUsed: false,
+        computerUseExecutionEnabled: false,
+      },
+    };
+  }
+  const capture = await runVoicePanelMicrophoneTest(payload);
+  const transcript = capture.transcript || capture.stt?.transcript || '';
+  const requestCaptured = meaningfulManualVoiceRequest(transcript);
+  const answer = manualVoiceAnswerFromEvidence(transcript);
+  const bridgeCapture = capture.bridgeCapture || null;
+  const bridgeStt = capture.stt?.bridge || null;
+  const tts = requestCaptured ? await requestTtsWav(answer) : { ok: false, status: 0, error: 'manual_request_not_captured', buffer: Buffer.alloc(0) };
+  const answerWavPath = path.join('/Users/master/.tarx/runs/voice-manual-loop', `manual-loop-answer-${new Date().toISOString().replace(/[:.]/g, '-')}.wav`);
+  if (tts.ok && tts.buffer?.length) {
+    fs.mkdirSync(path.dirname(answerWavPath), { recursive: true });
+    fs.writeFileSync(answerWavPath, tts.buffer);
+  }
+  const answerAudioStats = tts.ok ? readWavAudioStats(answerWavPath) : { validWav: false, nonSilent: false, fileSize: tts.buffer?.length || 0 };
+  let playback = { attempted: false, ok: false, skipped: false, method: 'afplay_local_playback' };
+  if (answerAudioStats.validWav) {
+    const played = spawnSync('/usr/bin/afplay', [answerWavPath], { timeout: 30000, encoding: 'utf8' });
+    playback = {
+      attempted: true,
+      ok: played.status === 0,
+      status: played.status,
+      signal: played.signal,
+      error: played.error?.message || null,
+      stderr: played.stderr || '',
+      method: 'afplay_local_playback',
+    };
+  }
+  const bridgeGreen = Boolean(bridgeCapture?.ok && (!capture.stt?.sttResult || bridgeStt?.ok));
+  const ttsGreen = Boolean(tts.ok && answerAudioStats.validWav && answerAudioStats.nonSilent && playback.ok);
+  const ok = Boolean(requestCaptured && bridgeGreen && ttsGreen);
+  const result = {
+    schema: 'tarx-voice-manual-loop-proof.v1',
+    ts: new Date().toISOString(),
+    ok,
+    status: ok ? 'voice_manual_loop_green' : 'voice_manual_loop_red',
+    firstBlocker: ok ? null
+      : !requestCaptured ? 'manual_request_not_captured'
+        : !bridgeGreen ? 'bridge_contracts_unavailable'
+          : 'tts_or_playback_failed',
+    mode: 'manual_voice_button',
+    featureFlags: flags,
+    wakeWordRequired: false,
+    strictWakeWordModeBlocked: true,
+    productionVoiceReady: false,
+    input: {
+      selectedDevice: capture.selectedDevice || null,
+      transcript,
+      sourceEvidence: PRIME_VOICE_EVIDENCE_PATHS.liveCalibration,
+      wavPath: capture.wavPath || null,
+      phraseCaptured: requestCaptured,
+      classification: capture.state === 'stt_green' ? 'manual_voice_semantic_green' : 'wake_word_optional_for_manual_voice_test',
+      captureState: capture.state,
+      audioStats: capture.audioStats || null,
+    },
+    answer: {
+      text: answer,
+      source: 'local_prime_operating_status_from_evidence',
+      usesCurrentGates: true,
+    },
+    bridge: {
+      captureEventsEndpoint: bridgeCapture,
+      sttResultsEndpoint: bridgeStt,
+      contractsGreen: bridgeGreen,
+      postedContracts: true,
+    },
+    tts: {
+      endpoint: tts.endpoint || process.env.TARX_TTS_URL || 'http://127.0.0.1:11446/v1/tts',
+      generation: {
+        ok: tts.ok,
+        status: tts.status,
+        contentType: tts.contentType || null,
+        error: tts.ok ? null : (tts.error || tts.text || null),
+      },
+      wavPath: answerAudioStats.validWav ? answerWavPath : null,
+      audioStats: answerAudioStats,
+      playback,
+      danielApproved: false,
+      label: 'Kokoro/am_adam remains internal; Daniel brand gate pending.',
+    },
+    routeTruth: {
+      computer: true,
+      supercomputer: 'Off',
+      browserFallback: 'Off',
+      supercomputerUsed: false,
+      browserFallbackUsed: false,
+      rawAudioLogged: false,
+    },
+    statuses: {
+      manualVoiceInternalTest: ok ? 'GREEN' : 'RED',
+      manualVoiceProductPath: ok ? 'GREEN_INTERNAL_ONLY' : 'RED',
+      wakeWordVoice: 'BLOCKED',
+      productionVoice: 'BLOCKED',
+      danielBrandGate: 'PENDING',
+    },
+    evidencePath: PRIME_VOICE_EVIDENCE_PATHS.manualLoop,
+    guardrails: {
+      productionVoiceReady: false,
+      wakeWordModeEnabled: false,
+      alwaysOnListeningEnabled: false,
+      browserFallbackUsed: false,
+      supercomputerUsed: false,
+      danielApproved: false,
+      computerUseExecutionEnabled: false,
+    },
+  };
+  writeVoiceManualLoopEvidence(result);
+  writeDiagnostic('latest-native-voice-manual-loop.json', result);
   return result;
 }
 
@@ -1692,6 +2029,7 @@ function createWindow() {
           '<input id="tarx-native-voice-custom" placeholder="Optional: :1 or exact device name" />' +
           '<div class="tarx-voice-command" id="tarx-native-voice-override-warning" hidden></div>' +
           '<div class="tarx-voice-row">' +
+          '  <button class="tarx-voice-primary" id="tarx-native-voice-ask" type="button" hidden>Ask TARX</button>' +
           '  <button class="tarx-voice-primary" id="tarx-native-voice-start" type="button">Start</button>' +
           '  <button id="tarx-native-voice-stop" type="button">Stop</button>' +
           '  <button class="tarx-voice-primary" id="tarx-native-voice-test" type="button">Test Microphone</button>' +
@@ -1706,6 +2044,8 @@ function createWindow() {
           '<div class="tarx-voice-row">' +
           '  <button id="tarx-native-voice-doctor" type="button">Run Voice Doctor</button>' +
           '  <button id="tarx-native-voice-copy-command" type="button">Copy QA command</button>' +
+          '  <button id="tarx-native-voice-mediadevices-spike" type="button" hidden>MediaDevices Spike</button>' +
+          '  <button id="tarx-native-voice-pipecat-spike" type="button" hidden>Pipecat Spike</button>' +
           '</div>' +
           '<div class="tarx-voice-state" id="tarx-native-voice-state" data-tone="neutral">' +
           '  <strong id="tarx-native-voice-state-label">inventory_loading</strong>' +
@@ -1722,6 +2062,7 @@ function createWindow() {
         var defaultNode = panel.querySelector('#tarx-native-voice-default');
         var overrideWarningNode = panel.querySelector('#tarx-native-voice-override-warning');
         var startButton = panel.querySelector('#tarx-native-voice-start');
+        var askButton = panel.querySelector('#tarx-native-voice-ask');
         var stopButton = panel.querySelector('#tarx-native-voice-stop');
         var testButton = panel.querySelector('#tarx-native-voice-test');
         var refreshButton = panel.querySelector('#tarx-native-voice-refresh');
@@ -1731,6 +2072,8 @@ function createWindow() {
         var privacyButton = panel.querySelector('#tarx-native-voice-privacy');
         var doctorButton = panel.querySelector('#tarx-native-voice-doctor');
         var copyCommandButton = panel.querySelector('#tarx-native-voice-copy-command');
+        var mediaDevicesSpikeButton = panel.querySelector('#tarx-native-voice-mediadevices-spike');
+        var pipecatSpikeButton = panel.querySelector('#tarx-native-voice-pipecat-spike');
         var stateBox = panel.querySelector('#tarx-native-voice-state');
         var stateLabel = panel.querySelector('#tarx-native-voice-state-label');
         var nextNode = panel.querySelector('#tarx-native-voice-next');
@@ -1791,22 +2134,44 @@ function createWindow() {
           var inventory = snapshot.evidence && snapshot.evidence.inventory && snapshot.evidence.inventory.json;
           var doctor = snapshot.evidence && snapshot.evidence.doctor && snapshot.evidence.doctor.json;
           var tts = snapshot.evidence && snapshot.evidence.ttsPlayback && snapshot.evidence.ttsPlayback.json;
+          var manualLoop = snapshot.evidence && snapshot.evidence.manualLoop && snapshot.evidence.manualLoop.json;
+          var mediaDevicesSpike = snapshot.evidence && snapshot.evidence.mediaDevicesSpike && snapshot.evidence.mediaDevicesSpike.json;
+          var pipecatSpike = snapshot.evidence && snapshot.evidence.pipecatSpike && snapshot.evidence.pipecatSpike.json;
           var liveAttempt = liveCalibration && liveCalibration.attempts && liveCalibration.attempts[0];
-          var audio = nativeStt && (nativeStt.audioStats || (nativeStt.freshCapture && nativeStt.freshCapture.audioStats)) || liveAttempt && liveAttempt.audioStats || null;
-          var selected = nativeStt && nativeStt.captureEvent && nativeStt.captureEvent.evidence && nativeStt.captureEvent.evidence.selected_device;
-          var wav = nativeStt && (nativeStt.wavPath || (nativeStt.captureEvent && nativeStt.captureEvent.evidence && nativeStt.captureEvent.evidence.audio_ref)) || liveAttempt && liveAttempt.wavPath;
-          var transcript = nativeStt && (nativeStt.rawTranscript || nativeStt.normalizedDisplayTranscript || (nativeStt.sttResult && nativeStt.sttResult.text)) || liveAttempt && liveAttempt.transcript;
+          var audio = manualLoop && manualLoop.capture && manualLoop.capture.audioStats
+            || nativeStt && (nativeStt.audioStats || (nativeStt.freshCapture && nativeStt.freshCapture.audioStats))
+            || liveAttempt && liveAttempt.audioStats
+            || null;
+          var selected = manualLoop && manualLoop.input && manualLoop.input.selectedDevice
+            || nativeStt && nativeStt.captureEvent && nativeStt.captureEvent.evidence && nativeStt.captureEvent.evidence.selected_device;
+          var wav = manualLoop && manualLoop.capture && manualLoop.capture.wavPath
+            || nativeStt && (nativeStt.wavPath || (nativeStt.captureEvent && nativeStt.captureEvent.evidence && nativeStt.captureEvent.evidence.audio_ref))
+            || liveAttempt && liveAttempt.wavPath;
+          var transcript = manualLoop && manualLoop.stt && manualLoop.stt.transcript
+            || nativeStt && (nativeStt.rawTranscript || nativeStt.normalizedDisplayTranscript || (nativeStt.sttResult && nativeStt.sttResult.text))
+            || liveAttempt && liveAttempt.transcript;
+          var currentDevice = snapshot.selectedDevice;
+          var lastGreenDevice = manualLoop && manualLoop.input && manualLoop.input.selectedDevice;
+          var firstBlocker = manualLoop && manualLoop.status === 'voice_manual_loop_green'
+            ? null
+            : ((manualLoop && manualLoop.firstBlocker) || (nativeStt && nativeStt.firstBlocker) || (liveCalibration && liveCalibration.firstBlocker));
+          var deviceDrift = lastGreenDevice && currentDevice && (lastGreenDevice.selector !== currentDevice.selector || lastGreenDevice.name !== currentDevice.name);
           if (evidenceNode) {
-            if (!nativeStt && !liveCalibration && !inventory && !doctor && !tts) {
+            if (!nativeStt && !liveCalibration && !manualLoop && !mediaDevicesSpike && !pipecatSpike && !inventory && !doctor && !tts) {
               evidenceNode.textContent = 'No voice evidence yet.';
             } else {
               evidenceNode.innerHTML = ''
                 + row('Inventory', inventory && inventory.status)
                 + row('Doctor', doctor && doctor.status)
                 + row('Live calibration', liveCalibration && liveCalibration.status)
+                + row('Manual loop', manualLoop && manualLoop.status)
+                + row('MediaDevices spike', mediaDevicesSpike && mediaDevicesSpike.status)
+                + row('Pipecat spike', pipecatSpike && pipecatSpike.status)
                 + row('Native STT', nativeStt && nativeStt.status)
-                + row('First blocker', (nativeStt && nativeStt.firstBlocker) || (liveCalibration && liveCalibration.firstBlocker))
+                + row('First blocker', firstBlocker)
                 + row('Selected', selected ? (selected.name + ' ' + selected.selector) : selectedEvidenceDevice(snapshot))
+                + row('Last green proof', lastGreenDevice ? (lastGreenDevice.name + ' ' + lastGreenDevice.selector) : 'missing')
+                + row('Device drift', deviceDrift ? ('Last green proof used ' + lastGreenDevice.name + '. Current selected input is ' + currentDevice.name + '. Run a fresh test before trusting voice.') : 'none')
                 + row('WAV', wav)
                 + row('RMS / peak / duration', audio ? ((audio.rms || 0) + ' / ' + (audio.peakAmplitude || 0) + ' / ' + (audio.duration_ms || audio.durationMs || 0) + 'ms') : 'missing')
                 + row('Transcript', transcript)
@@ -1819,6 +2184,9 @@ function createWindow() {
           var devices = inventory && inventory.avFoundationInputs || [];
           if (devices.length === 1 && /razer kiyo pro/i.test(String(devices[0].name || '')) && state === 'stt_semantic_red') {
             setStatus('Prime can capture audio from Razer Kiyo Pro, but Whisper is not detecting clear speech. Select a different microphone in macOS Sound Input, then Refresh.');
+          }
+          if (deviceDrift) {
+            setStatus('Last green proof used ' + lastGreenDevice.name + '. Current selected input is ' + currentDevice.name + '. Run a fresh test before trusting voice.');
           }
         }
         function positionPanelNearButton() {
@@ -1914,12 +2282,22 @@ function createWindow() {
           deviceSelect.value = requested || '';
           if (defaultNode) defaultNode.textContent = 'macOS default input: ' + defaultName + (defaultSelector ? ' ' + defaultSelector : '');
           updateOverrideWarning(native);
+          var flags = capabilities && capabilities.featureFlags || {};
+          var manualEnabled = flags.TARX_LOCAL_OPERATOR_BETA && flags.TARX_VOICE_MANUAL_INTERNAL && flags.TARX_VOICE_NATIVE_CAPTURE;
+          var mediaDevicesSpikeEnabled = flags.TARX_VOICE_MEDIADEVICES_INTERNAL;
+          var pipecatSpikeEnabled = flags.TARX_VOICE_PIPECAT_INTERNAL;
+          if (askButton) askButton.hidden = !manualEnabled;
+          if (mediaDevicesSpikeButton) mediaDevicesSpikeButton.hidden = !mediaDevicesSpikeEnabled;
+          if (pipecatSpikeButton) pipecatSpikeButton.hidden = !pipecatSpikeEnabled;
           var hasAirPods = devices.some(function(device) { return /airpods/i.test(device.name || ''); });
           if (!hasAirPods && defaultName !== 'unknown' && /airpods/i.test(defaultName) && statusNode) {
             statusNode.textContent = 'AirPods are connected, but not visible to TARX/AVFoundation. Select them in macOS Sound Input, reconnect Bluetooth, or use a wired/built-in mic.';
             return;
           }
           setStatus('Mode: ' + (requested ? 'override' : 'macOS default input') + ' · Native: ' + (native && native.available ? 'available' : 'blocked'));
+          if (!manualEnabled && statusNode) {
+            setStatus('Manual Voice Test is internal-flagged. Set TARX_LOCAL_OPERATOR_BETA=1 TARX_VOICE_MANUAL_INTERNAL=1 TARX_VOICE_NATIVE_CAPTURE=1 to enable Ask TARX.');
+          }
         }
         function refreshVoiceSettings() {
           setVoiceState(active ? 'listening' : 'blocked', active ? 'Listening' : 'Voice setup');
@@ -2000,6 +2378,27 @@ function createWindow() {
             setStatus('Stop failed: ' + (error && error.message ? error.message : 'unknown'));
           });
         });
+        askButton.addEventListener('click', function() {
+          if (askButton.disabled) return;
+          askButton.disabled = true;
+          setVoiceState('capture_running', 'Ask TARX...');
+          if (stateLabel) stateLabel.textContent = 'capture_running';
+          setStatus('Speak your request now. Manual button mode does not require wake word.');
+          if (commandNode) commandNode.textContent = 'Running internal Manual Voice locally: native capture, local Whisper, local answer, local TTS playback.';
+          voice.askManualInternal({ device: selectedDeviceValue() }).then(function(result) {
+            var passed = result && result.status === 'voice_manual_loop_green';
+            setVoiceState(passed ? 'idle' : 'blocked', passed ? 'Voice' : 'Voice blocked');
+            if (stateLabel) stateLabel.textContent = passed ? 'internal_loop_ready' : (result && result.firstBlocker || 'blocked_needs_mic_fix');
+            setStatus(passed ? 'Manual Voice internal loop green.' : ('Manual Voice blocked: ' + (result && result.firstBlocker || 'unknown')));
+            return refreshVoiceSettings();
+          }).catch(function(error) {
+            setVoiceState('error', 'Voice blocked');
+            if (stateLabel) stateLabel.textContent = 'blocked_needs_mic_fix';
+            setStatus('Ask TARX failed: ' + (error && error.message ? error.message : 'unknown'));
+          }).finally(function() {
+            askButton.disabled = false;
+          });
+        });
         testButton.addEventListener('click', function() {
           if (testButton.disabled) return;
           testButton.disabled = true;
@@ -2030,9 +2429,21 @@ function createWindow() {
           updateOverrideWarning(capabilities && capabilities.nativeCapture);
           setStatus('Override cleared. Voice will use macOS default input on next capture.');
         });
-        soundButton.addEventListener('click', function() { voice.openInputSettings(); });
-        bluetoothButton.addEventListener('click', function() { voice.openBluetoothSettings(); });
-        privacyButton.addEventListener('click', function() { voice.openMicrophonePrivacySettings(); });
+        function openSetting(label, opener) {
+          setStatus('Opening ' + label + '...');
+          return opener().then(function(result) {
+            if (result && result.ok) {
+              setStatus('Opened ' + label + '. If it did not come forward, use macOS System Settings directly.');
+              return;
+            }
+            setStatus('Could not open ' + label + ': ' + (result && (result.error || result.fallbackError) || 'unknown'));
+          }).catch(function(error) {
+            setStatus('Could not open ' + label + ': ' + (error && error.message ? error.message : 'unknown'));
+          });
+        }
+        soundButton.addEventListener('click', function() { openSetting('Sound Input', function() { return voice.openInputSettings(); }); });
+        bluetoothButton.addEventListener('click', function() { openSetting('Bluetooth Settings', function() { return voice.openBluetoothSettings(); }); });
+        privacyButton.addEventListener('click', function() { openSetting('Microphone Privacy', function() { return voice.openMicrophonePrivacySettings(); }); });
         doctorButton.addEventListener('click', function() {
           var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-doctor';
           if (d.copyText) d.copyText(command);
@@ -2043,6 +2454,40 @@ function createWindow() {
           if (d.copyText) d.copyText(command);
           if (commandNode) commandNode.textContent = 'Copied native STT proof command: ' + command;
         });
+        if (mediaDevicesSpikeButton) {
+          mediaDevicesSpikeButton.addEventListener('click', function() {
+            if (!voice.runMediaDevicesSpike || mediaDevicesSpikeButton.disabled) return;
+            mediaDevicesSpikeButton.disabled = true;
+            setStatus('Running internal MediaDevices spike. Allow microphone access if prompted.');
+            if (commandNode) commandNode.textContent = 'MediaDevices spike captures metadata only. It does not save raw audio, enable browser fallback, or call Supercomputer.';
+            voice.runMediaDevicesSpike({ durationMs: 1800 }).then(function(result) {
+              if (stateLabel) stateLabel.textContent = result && result.ok ? 'mediadevices_spike_green' : 'mediadevices_spike_red';
+              setStatus(result && result.ok ? 'MediaDevices spike green. Product path remains draft.' : ('MediaDevices spike blocked: ' + (result && result.firstBlocker || result && result.error || 'unknown')));
+              return refreshVoiceSettings();
+            }).catch(function(error) {
+              setStatus('MediaDevices spike failed: ' + (error && error.message ? error.message : 'unknown'));
+            }).finally(function() {
+              mediaDevicesSpikeButton.disabled = false;
+            });
+          });
+        }
+        if (pipecatSpikeButton) {
+          pipecatSpikeButton.addEventListener('click', function() {
+            if (!voice.runPipecatSpike || pipecatSpikeButton.disabled) return;
+            pipecatSpikeButton.disabled = true;
+            setStatus('Checking internal Pipecat spike scaffold...');
+            if (commandNode) commandNode.textContent = 'Pipecat spike is internal only. It does not replace Manual Voice or enable browser fallback/Supercomputer.';
+            voice.runPipecatSpike().then(function(result) {
+              if (stateLabel) stateLabel.textContent = result && result.status ? result.status : 'voice_pipecat_spike_blocked';
+              setStatus(result && result.status === 'voice_pipecat_spike_green' ? 'Pipecat spike green.' : ('Pipecat spike blocked: ' + (result && result.firstBlocker || 'unknown')));
+              return refreshVoiceSettings();
+            }).catch(function(error) {
+              setStatus('Pipecat spike failed: ' + (error && error.message ? error.message : 'unknown'));
+            }).finally(function() {
+              pipecatSpikeButton.disabled = false;
+            });
+          });
+        }
         document.documentElement.appendChild(panel);
         mountVoiceButton();
         window.addEventListener('resize', positionPanelNearButton);
@@ -2632,7 +3077,7 @@ function buildMenu() {
         { role: 'selectAll' },
       ],
     },
-    {
+      {
       label: 'View',
       submenu: [
         {
@@ -2860,21 +3305,50 @@ ipcMain.handle('tarx:voice-request-permission', async () => requestVoicePermissi
 ipcMain.handle('tarx:voice-runtime-capabilities', () => voiceRuntimeCapabilities());
 ipcMain.handle('tarx:voice-prime-evidence', async () => primeVoiceEvidenceSnapshot());
 ipcMain.handle('tarx:voice-test-microphone', async (_event, payload = {}) => runVoicePanelMicrophoneTest(payload));
-
-ipcMain.handle('tarx:voice-open-input-settings', async () => {
-  await shell.openExternal(MAC_SOUND_INPUT_SETTINGS_URL);
-  return { ok: true, url: MAC_SOUND_INPUT_SETTINGS_URL };
+ipcMain.handle('tarx:voice-manual-internal-ask', async (_event, payload = {}) => runManualVoiceInternal(payload));
+ipcMain.handle('tarx:voice-mediadevices-spike-evidence', async (_event, payload = {}) => {
+  if (!VOICE_MEDIADEVICES_INTERNAL_ENABLED) {
+    return writeMediaDevicesSpikeEvidence({
+      ok: false,
+      firstBlocker: 'TARX_VOICE_MEDIADEVICES_INTERNAL_disabled',
+    });
+  }
+  return writeMediaDevicesSpikeEvidence(payload);
+});
+ipcMain.handle('tarx:voice-pipecat-spike-run', async () => {
+  if (!VOICE_PIPECAT_INTERNAL_ENABLED) {
+    return writePipecatSpikeEvidence({
+      status: 'voice_pipecat_spike_blocked',
+      serviceStatus: 'pipecat_spike_scaffolded_not_running',
+      firstBlocker: 'TARX_VOICE_PIPECAT_INTERNAL_disabled',
+    });
+  }
+  const script = path.join(__dirname, '..', 'scripts', 'voice-pipecat-spike-service.js');
+  const run = spawnSync(nodePath(), [script, 'once'], {
+    cwd: path.join(__dirname, '..'),
+    env: {
+      ...process.env,
+      TARX_VOICE_PIPECAT_INTERNAL: '1',
+    },
+    encoding: 'utf8',
+    timeout: 10000,
+  });
+  try {
+    return JSON.parse(String(run.stdout || '').trim() || '{}');
+  } catch {
+    return writePipecatSpikeEvidence({
+      status: 'voice_pipecat_spike_blocked',
+      serviceStatus: 'pipecat_spike_scaffolded_not_running',
+      firstBlocker: run.error?.message || run.stderr || 'pipecat_spike_run_failed',
+    });
+  }
 });
 
-ipcMain.handle('tarx:voice-open-microphone-privacy-settings', async () => {
-  await shell.openExternal(MAC_MICROPHONE_PRIVACY_SETTINGS_URL);
-  return { ok: true, url: MAC_MICROPHONE_PRIVACY_SETTINGS_URL };
-});
+ipcMain.handle('tarx:voice-open-input-settings', async () => openMacSettingsUrl(MAC_SOUND_INPUT_SETTINGS_URL));
 
-ipcMain.handle('tarx:voice-open-bluetooth-settings', async () => {
-  await shell.openExternal(MAC_BLUETOOTH_SETTINGS_URL);
-  return { ok: true, url: MAC_BLUETOOTH_SETTINGS_URL };
-});
+ipcMain.handle('tarx:voice-open-microphone-privacy-settings', async () => openMacSettingsUrl(MAC_MICROPHONE_PRIVACY_SETTINGS_URL));
+
+ipcMain.handle('tarx:voice-open-bluetooth-settings', async () => openMacSettingsUrl(MAC_BLUETOOTH_SETTINGS_URL));
 
 ipcMain.handle('tarx:local-operator-control-plane', async () => localOperatorControlPlaneState());
 
