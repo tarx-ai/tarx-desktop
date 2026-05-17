@@ -19,14 +19,15 @@ record(checks, 'feature_flag_declared', main.includes('TARX_VOICE_MANUAL_INTERNA
 record(checks, 'requires_internal_flags', main.includes('TARX_LOCAL_OPERATOR_BETA') && main.includes('manual_voice_internal_feature_flag_required'), null);
 record(checks, 'manual_ui_hidden_without_flag', main.includes('id="tarx-native-voice-ask"') && main.includes('askButton.hidden = !manualEnabled'), null);
 record(checks, 'ipc_handler_exists', main.includes("ipcMain.handle('tarx:voice-manual-internal-ask'") && preload.includes('askManualInternal'), null);
-record(checks, 'native_capture_used', main.includes('runVoicePanelMicrophoneTest(payload)') && main.includes("source: 'electron_native'"), null);
+record(checks, 'mediadevices_product_capture_used', preload.includes('const mediaDevicesResult = await captureManualTurn(payload)') && main.includes("source: 'electron_mediadevices'"), null);
+record(checks, 'native_capture_kept_as_qa_fallback', main.includes('Native AVFoundation is QA fallback') && main.includes('runVoicePanelMicrophoneTest(payload)'), null);
 record(checks, 'browser_fallback_not_used', main.includes('browserFallbackUsed: false') && main.includes("browserFallback: 'Off'"), null);
 record(checks, 'supercomputer_not_used', main.includes('supercomputerUsed: false') && main.includes("supercomputer: 'Off'"), null);
 record(checks, 'operating_brief_answer_source', main.includes('manualVoiceAnswerFromEvidence') && main.includes('local_prime_operating_status_from_evidence'), null);
 record(checks, 'tts_generated_and_played', main.includes('requestTtsWav') && main.includes('/usr/bin/afplay') && main.includes('tts_or_playback_failed'), null);
 record(checks, 'selected_device_recorded', main.includes('selectedDevice: capture.selectedDevice') && main.includes('selectedDevice,'), null);
 record(checks, 'device_drift_warning_visible', main.includes('Last green proof used') && main.includes('Run a fresh test before trusting voice'), null);
-record(checks, 'evidence_path_written', main.includes("manualLoop: '/Users/master/.tarx/runs/voice-manual-loop/latest.json'") && main.includes('writeVoiceManualLoopEvidence'), null);
+record(checks, 'evidence_path_written', main.includes("manualLoop: '/Users/master/.tarx/runs/voice-manual-loop/latest.json'") && main.includes('writeVoiceManualLoopEvidence') && main.includes('mediaDevicesProductCapture'), null);
 record(checks, 'wake_word_remains_blocked', main.includes('strictWakeWordModeBlocked: true') && main.includes("wakeWordVoice: 'BLOCKED'"), null);
 record(checks, 'no_production_claim', main.includes('productionVoiceReady: false') && !/production voice ready/i.test(main), null);
 

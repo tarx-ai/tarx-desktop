@@ -39,12 +39,14 @@ const VOICE_BROWSER_FALLBACK_ENABLED = process.env.TARX_VOICE_BROWSER_FALLBACK =
 const VOICE_MANUAL_INTERNAL_ENABLED = process.env.TARX_VOICE_MANUAL_INTERNAL === '1';
 const VOICE_MEDIADEVICES_INTERNAL_ENABLED = process.env.TARX_VOICE_MEDIADEVICES_INTERNAL === '1';
 const VOICE_PIPECAT_INTERNAL_ENABLED = process.env.TARX_VOICE_PIPECAT_INTERNAL === '1';
+const VOICE_CAPTURE_DRIVER = String(process.env.TARX_VOICE_CAPTURE_DRIVER || (VOICE_MEDIADEVICES_INTERNAL_ENABLED ? 'mediadevices' : 'native')).toLowerCase();
 const LOCAL_OPERATOR_FLAGS = {
   TARX_VOICE_NATIVE_CAPTURE: VOICE_NATIVE_CAPTURE_ENABLED,
   TARX_VOICE_BROWSER_FALLBACK: VOICE_BROWSER_FALLBACK_ENABLED,
   TARX_VOICE_MANUAL_INTERNAL: VOICE_MANUAL_INTERNAL_ENABLED,
   TARX_VOICE_MEDIADEVICES_INTERNAL: VOICE_MEDIADEVICES_INTERNAL_ENABLED,
   TARX_VOICE_PIPECAT_INTERNAL: VOICE_PIPECAT_INTERNAL_ENABLED,
+  TARX_VOICE_CAPTURE_DRIVER: VOICE_CAPTURE_DRIVER,
   TARX_VOICE_LOCAL_PACK: process.env.TARX_VOICE_LOCAL_PACK === '1',
   TARX_VISION_LOCAL_PACK: process.env.TARX_VISION_LOCAL_PACK === '1',
   TARX_ACTION_PROPOSALS: process.env.TARX_ACTION_PROPOSALS === '1',
@@ -65,6 +67,8 @@ const PRIME_VOICE_EVIDENCE_PATHS = {
   nativeStt: '/Users/master/.tarx/runs/voice-native-stt/latest.json',
   liveCalibration: '/Users/master/.tarx/runs/voice-live-calibration/latest.json',
   manualLoop: '/Users/master/.tarx/runs/voice-manual-loop/latest.json',
+  mediaDevicesProductCapture: '/Users/master/.tarx/runs/voice-mediadevices-product-capture/latest.json',
+  deviceReadiness: '/Users/master/.tarx/runs/voice-device-readiness/latest.json',
   mediaDevicesSpike: '/Users/master/.tarx/runs/voice-mediadevices-spike/latest.json',
   pipecatSpike: '/Users/master/.tarx/runs/voice-pipecat-spike/latest.json',
   internalBetaLoop: '/Users/master/.tarx/runs/voice-internal-beta-loop/latest.json',
@@ -615,19 +619,25 @@ function voiceRuntimeCapabilities() {
       TARX_VOICE_MANUAL_INTERNAL: VOICE_MANUAL_INTERNAL_ENABLED,
       TARX_VOICE_MEDIADEVICES_INTERNAL: VOICE_MEDIADEVICES_INTERNAL_ENABLED,
       TARX_VOICE_PIPECAT_INTERNAL: VOICE_PIPECAT_INTERNAL_ENABLED,
+      TARX_VOICE_CAPTURE_DRIVER: VOICE_CAPTURE_DRIVER,
     },
     sources: {
-      production: VOICE_NATIVE_CAPTURE_ENABLED ? 'electron_native' : null,
+      product: VOICE_CAPTURE_DRIVER === 'mediadevices' && VOICE_MEDIADEVICES_INTERNAL_ENABLED ? 'electron_mediadevices' : null,
+      qaFallback: VOICE_NATIVE_CAPTURE_ENABLED ? 'electron_native_ffmpeg_avfoundation' : null,
       fallback: VOICE_BROWSER_FALLBACK_ENABLED ? 'browser_fallback' : null,
     },
+    captureDriver: VOICE_CAPTURE_DRIVER,
     routeTruth: {
       localOnly: true,
       supercomputerAllowed: false,
       supercomputerUsed: false,
+      productCapture: VOICE_CAPTURE_DRIVER === 'mediadevices' ? 'electron_mediadevices' : 'electron_native',
+      avFoundationQaFallbackOnly: VOICE_CAPTURE_DRIVER === 'mediadevices',
       browserCaptureIsFallback: true,
+      browserFallbackUsed: false,
       manualVoiceRequiresWakeWord: false,
       wakeWordVoiceBlocked: true,
-      mediaDevicesProductPathDraft: true,
+      mediaDevicesProductPath: VOICE_CAPTURE_DRIVER === 'mediadevices' && VOICE_MEDIADEVICES_INTERNAL_ENABLED,
       pipecatOrchestrationDraft: true,
     },
     states: VOICE_UX_STATES,
@@ -652,12 +662,22 @@ function readPrimeVoiceEvidenceFile(file) {
 function derivePrimeVoicePanelState({ capabilities, evidence }) {
   if (voiceNativeCaptureState.active) return 'capture_running';
   const devices = capabilities?.nativeCapture?.availableInputDevices || [];
+  const mediaDevicesCapture = evidence?.mediaDevicesProductCapture?.json || {};
+  const deviceReadiness = evidence?.deviceReadiness?.json || {};
   const stt = evidence?.nativeStt?.json || {};
   const beta = evidence?.internalBetaLoop?.json || {};
   const tts = evidence?.ttsPlayback?.json || {};
   const manualLoop = evidence?.manualLoop?.json || {};
   const audio = stt.audioStats || stt.freshCapture?.audioStats || {};
-  if (!devices.length) return 'no_input_devices';
+  if (deviceReadiness.firstBlocker === 'permission_needed') return 'permission_needed';
+  if (deviceReadiness.firstBlocker === 'no_input_devices') return 'no_input_devices';
+  if (deviceReadiness.firstBlocker === 'device_lost') return 'device_lost';
+  if (deviceReadiness.status === 'voice_device_changed') return 'device_changed';
+  if (mediaDevicesCapture.status === 'voice_mediadevices_product_capture_green') return 'stt_green';
+  if (mediaDevicesCapture.state === 'capture_no_level') return 'capture_no_level';
+  if (mediaDevicesCapture.state === 'stt_route_failed') return 'stt_route_failed';
+  if (mediaDevicesCapture.state === 'stt_semantic_red') return 'stt_semantic_red';
+  if (!devices.length && VOICE_CAPTURE_DRIVER !== 'mediadevices') return 'no_input_devices';
   if (beta.status === 'local_voice_internal_beta_green') return 'internal_loop_ready';
   if (manualLoop.status === 'voice_manual_loop_green') return 'internal_loop_ready';
   if (tts.missing || !tts.status) {
@@ -676,16 +696,23 @@ function derivePrimeVoicePanelState({ capabilities, evidence }) {
 function primeVoiceNextAction(state, evidence) {
   const stt = evidence?.nativeStt?.json || {};
   const manualLoop = evidence?.manualLoop?.json || {};
+  const mediaDevicesCapture = evidence?.mediaDevicesProductCapture?.json || {};
   if (state === 'no_input_devices') return 'Open macOS Sound Input, connect/select a microphone, then Refresh Inputs.';
+  if (state === 'permission_needed') return 'Allow microphone access, then Refresh Inputs.';
+  if (state === 'device_lost') return 'Selected microphone disappeared. Reconnect/select a mic, then Refresh.';
+  if (state === 'device_changed') return 'Device changed. Confirm the selected microphone, then run a fresh Manual Voice test.';
   if (state === 'capture_running') return 'Speak clearly, then press Stop. Required phrase: TARS, what are we working on today?';
   if (state === 'capture_silent') return 'Select a live microphone with a moving macOS input meter, then rerun native STT.';
+  if (state === 'capture_no_level') return 'Electron captured no useful input level. Check mic selection, mute state, and permissions.';
   if (state === 'capture_non_silent') return 'Run native STT proof with the required spoken phrase.';
+  if (state === 'stt_route_failed') return 'Local Whisper route failed. Keep browser fallback off and restart local Whisper before retesting.';
   if (state === 'stt_semantic_red') return 'Prime can capture audio, but Whisper is not detecting the required phrase. Select a different microphone in macOS Sound Input, then Refresh.';
   if (state === 'stt_green') return 'Stop here for STT: Bridge voice endpoints and TTS playback proof must be green before full loop.';
   if (state === 'bridge_contracts_missing') return 'Bridge voice runtime endpoints are missing or returning 404; restart/update Bridge only when safe.';
   if (state === 'tts_missing') return 'Run Prime TTS playback proof; Daniel voice remains internal/unapproved.';
   if (state === 'internal_loop_ready' && manualLoop.status === 'voice_manual_loop_green') return 'Manual Voice internal loop is green. Wake-word and public release remain blocked.';
   if (state === 'internal_loop_ready') return 'Internal local voice loop evidence is green. Keep release claims disabled.';
+  if (mediaDevicesCapture.firstBlocker) return `Resolve blocker: ${mediaDevicesCapture.firstBlocker}`;
   if (stt.firstBlocker) return `Resolve blocker: ${stt.firstBlocker}`;
   return 'Run Voice Doctor, then run native STT with: TARS, what are we working on today?';
 }
@@ -698,7 +725,9 @@ async function primeVoiceEvidenceSnapshot() {
   const bridgeCaptureContract = await requestBridgeJson('/v1/runtime/voice/capture-events', { method: 'GET', timeoutMs: 900 });
   const bridgeSttContract = await requestBridgeJson('/v1/runtime/stt-results', { method: 'GET', timeoutMs: 900 });
   const state = derivePrimeVoicePanelState({ capabilities, evidence });
-  const selectedDevice = capabilities.nativeCapture?.selectedDevice?.device
+  const selectedDevice = evidence.mediaDevicesProductCapture?.json?.selectedDevice
+    || evidence.deviceReadiness?.json?.selectedDevice
+    || capabilities.nativeCapture?.selectedDevice?.device
     || evidence.nativeStt?.json?.freshCapture?.inventory?.selected
     || evidence.nativeStt?.json?.captureEvent?.evidence?.selected_device
     || null;
@@ -714,14 +743,22 @@ async function primeVoiceEvidenceSnapshot() {
       'capture_running',
       'capture_complete',
       'capture_silent',
+      'capture_no_level',
       'capture_non_silent',
       'stt_route_green',
+      'stt_route_failed',
       'stt_semantic_red',
       'stt_green',
       'bridge_contracts_missing',
       'tts_missing',
       'internal_loop_ready',
       'blocked_needs_mic_fix',
+      'permission_needed',
+      'device_lost',
+      'device_changed',
+      'manual_loop_green',
+      'tts_failed',
+      'playback_failed',
     ],
     state,
     selectedDevice,
@@ -754,6 +791,7 @@ async function primeVoiceEvidenceSnapshot() {
       doctor: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-doctor',
       liveCalibration: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && unset TARX_VOICE_NATIVE_CAPTURE_DEVICE && npm run qa:voice-live-calibration',
       nativeStt: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && unset TARX_VOICE_NATIVE_CAPTURE_DEVICE && TARX_VOICE_NATIVE_CAPTURE=1 npm run qa:voice-native-stt',
+      mediaDevicesProduct: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && TARX_VOICE_MEDIADEVICES_INTERNAL=1 TARX_VOICE_CAPTURE_DRIVER=mediadevices npm run qa:voice-mediadevices-product-capture',
     },
     requiredSpokenPhrase: 'TARS, what are we working on today?',
     writtenDisplayPhrase: 'TARX, what are we working on today?',
@@ -1123,6 +1161,10 @@ async function transcribeNativeCaptureFile(captureEvent, capturePath) {
     confidence: transcript && !/^\[BLANK_AUDIO\]$/i.test(transcript) ? 0.8 : 0,
     latency_ms: Date.now() - started,
     local_only: true,
+    route: {
+      local_only: true,
+      supercomputer_used: false,
+    },
     evidence: {
       audio_ref: capturePath,
       audio_bytes: audio.length,
@@ -1295,6 +1337,321 @@ function writeMediaDevicesSpikeEvidence(payload = {}) {
     evidencePath: file,
   };
   fs.writeFileSync(file, `${JSON.stringify(result, null, 2)}\n`);
+  return result;
+}
+
+function mediaDevicesCaptureExtension(mimeType = '') {
+  const type = String(mimeType || '').toLowerCase();
+  if (type.includes('wav')) return 'wav';
+  if (type.includes('ogg')) return 'ogg';
+  if (type.includes('mp4') || type.includes('m4a')) return 'm4a';
+  if (type.includes('webm')) return 'webm';
+  return 'webm';
+}
+
+function rendererAudioBuffer(payload = {}) {
+  const value = payload.audioBuffer || payload.audioBytes || payload.bytes || null;
+  if (!value) return Buffer.alloc(0);
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof ArrayBuffer) return Buffer.from(value);
+  if (ArrayBuffer.isView(value)) return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  if (Array.isArray(value)) return Buffer.from(value);
+  return Buffer.alloc(0);
+}
+
+function normalizeMediaDeviceIdentity(device = {}) {
+  const id = device.id || device.deviceId || '';
+  return {
+    id,
+    deviceId: id,
+    label: device.label || device.name || '',
+    name: device.name || device.label || '',
+    groupId: device.groupId || '',
+    kind: device.kind || 'audioinput',
+    default: Boolean(device.default || id === 'default'),
+    source: 'electron_mediadevices',
+    trackSettings: device.trackSettings || null,
+    constraints: device.constraints || null,
+  };
+}
+
+function mediaDeviceSummary(device = null) {
+  if (!device) return 'unknown microphone';
+  const normalized = normalizeMediaDeviceIdentity(device);
+  return normalized.label || normalized.deviceId || 'unknown microphone';
+}
+
+function mediaDeviceIdentityChanged(current = null, lastGreen = null) {
+  if (!current || !lastGreen) return false;
+  const a = normalizeMediaDeviceIdentity(current);
+  const b = normalizeMediaDeviceIdentity(lastGreen);
+  if (a.deviceId && b.deviceId && a.deviceId === b.deviceId) return false;
+  if (a.groupId && b.groupId && a.groupId === b.groupId) return false;
+  if (a.label && b.label && a.label === b.label) return false;
+  return true;
+}
+
+function transcodeMediaDevicesCaptureToWav(inputPath, outputPath) {
+  const binary = findNativeCaptureBinary();
+  if (!binary) {
+    return { ok: false, firstBlocker: 'ffmpeg_conversion_binary_missing', binary: null };
+  }
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-y',
+    '-i', inputPath,
+    '-ac', '1',
+    '-ar', '16000',
+    '-f', 'wav',
+    outputPath,
+  ];
+  const started = Date.now();
+  const result = spawnSync(binary, args, { encoding: 'utf8', timeout: 20000 });
+  return {
+    ok: result.status === 0 && fs.existsSync(outputPath),
+    status: result.status,
+    signal: result.signal,
+    error: result.error?.message || null,
+    stderr: String(result.stderr || '').slice(-2000),
+    ms: Date.now() - started,
+    binary,
+    args: ['-i', '<renderer-capture>', '-ac', '1', '-ar', '16000', '-f', 'wav', '<local-wav>'],
+    adapter: 'ffmpeg_file_conversion_only_not_avfoundation_device_routing',
+  };
+}
+
+function writeVoiceDeviceReadinessEvidence(payload = {}) {
+  const file = PRIME_VOICE_EVIDENCE_PATHS.deviceReadiness;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const result = {
+    schema: 'tarx-voice-device-readiness.v1',
+    ts: new Date().toISOString(),
+    ok: payload.ok !== false,
+    status: payload.status || (payload.ok === false ? 'voice_device_readiness_blocked' : 'voice_device_readiness_green'),
+    firstBlocker: payload.firstBlocker || null,
+    captureDriver: VOICE_CAPTURE_DRIVER,
+    productCapturePath: VOICE_CAPTURE_DRIVER === 'mediadevices' ? 'electron_mediadevices' : 'electron_native',
+    nativeCaptureRole: 'qa_fallback_diagnostic_only',
+    routeTruth: {
+      computer: true,
+      supercomputer: 'Off',
+      supercomputerUsed: false,
+      browserFallback: 'Off',
+      browserFallbackUsed: false,
+      rawAudioLogged: false,
+    },
+    ...payload,
+    evidencePath: file,
+  };
+  fs.writeFileSync(file, `${JSON.stringify(result, null, 2)}\n`);
+  return result;
+}
+
+function writeMediaDevicesProductCaptureEvidence(payload = {}) {
+  const file = PRIME_VOICE_EVIDENCE_PATHS.mediaDevicesProductCapture;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const result = {
+    schema: 'tarx-voice-mediadevices-product-capture.v1',
+    ts: new Date().toISOString(),
+    ok: Boolean(payload.ok),
+    status: payload.status || (payload.ok ? 'voice_mediadevices_product_capture_green' : 'voice_mediadevices_product_capture_red'),
+    firstBlocker: payload.ok ? null : (payload.firstBlocker || 'mediadevices_product_capture_failed'),
+    captureDriver: 'electron_mediadevices',
+    productPath: true,
+    qaFallbackUsed: false,
+    routeTruth: {
+      computer: true,
+      supercomputer: 'Off',
+      supercomputerUsed: false,
+      browserFallback: 'Off',
+      browserFallbackUsed: false,
+      rawAudioLogged: false,
+      localWhisper: true,
+    },
+    guardrails: {
+      productionVoiceReady: false,
+      wakeWordModeEnabled: false,
+      alwaysOnListeningEnabled: false,
+      browserFallbackUsed: false,
+      supercomputerUsed: false,
+      computerUseExecutionEnabled: false,
+    },
+    ...payload,
+    evidencePath: file,
+  };
+  fs.writeFileSync(file, `${JSON.stringify(result, null, 2)}\n`);
+  return result;
+}
+
+async function runMediaDevicesProductCapture(payload = {}) {
+  const selectedDevice = normalizeMediaDeviceIdentity(payload.selectedDevice || { deviceId: payload.deviceId || 'default', label: payload.deviceLabel || '' });
+  const constraints = payload.constraints || selectedDevice.constraints || {};
+  const base = {
+    selectedDevice,
+    devicesBeforePermission: payload.devicesBeforePermission || [],
+    devicesAfterPermission: payload.devicesAfterPermission || [],
+    trackSettings: payload.trackSettings || selectedDevice.trackSettings || null,
+    constraints,
+    levels: payload.levels || null,
+    durationMs: Number(payload.durationMs || payload.captureMs || 0),
+    mimeType: payload.mimeType || 'audio/webm',
+  };
+  if (!VOICE_MEDIADEVICES_INTERNAL_ENABLED || VOICE_CAPTURE_DRIVER !== 'mediadevices') {
+    const result = writeMediaDevicesProductCaptureEvidence({
+      ...base,
+      ok: false,
+      status: 'voice_mediadevices_product_capture_blocked',
+      firstBlocker: 'mediadevices_product_driver_disabled',
+    });
+    writeVoiceDeviceReadinessEvidence({
+      ok: false,
+      status: 'voice_device_readiness_blocked',
+      firstBlocker: 'mediadevices_product_driver_disabled',
+      selectedDevice,
+    });
+    return result;
+  }
+  const buffer = rendererAudioBuffer(payload);
+  if (!buffer.length && payload.firstBlocker) {
+    const result = writeMediaDevicesProductCaptureEvidence({
+      ...base,
+      ok: false,
+      status: 'voice_mediadevices_product_capture_blocked',
+      firstBlocker: payload.firstBlocker,
+      errorDetail: payload.errorDetail || null,
+    });
+    writeVoiceDeviceReadinessEvidence({
+      ok: false,
+      status: 'voice_device_readiness_blocked',
+      firstBlocker: payload.firstBlocker,
+      selectedDevice,
+      devicesAfterPermission: base.devicesAfterPermission,
+    });
+    return result;
+  }
+  if (!buffer.length) {
+    const result = writeMediaDevicesProductCaptureEvidence({
+      ...base,
+      ok: false,
+      status: 'voice_mediadevices_product_capture_blocked',
+      firstBlocker: 'empty_renderer_audio_buffer',
+    });
+    writeVoiceDeviceReadinessEvidence({
+      ok: false,
+      status: 'voice_device_readiness_blocked',
+      firstBlocker: 'empty_renderer_audio_buffer',
+      selectedDevice,
+    });
+    return result;
+  }
+  const captureId = `vc_mediadevices_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  const ext = mediaDevicesCaptureExtension(payload.mimeType);
+  const rawPath = path.join(voiceCaptureDir(), `${captureId}.${ext}`);
+  const wavPath = path.join(voiceCaptureDir(), `${captureId}.wav`);
+  fs.writeFileSync(rawPath, buffer);
+  const conversion = ext === 'wav'
+    ? { ok: true, status: 0, ms: 0, adapter: 'renderer_wav_passthrough', binary: null }
+    : transcodeMediaDevicesCaptureToWav(rawPath, wavPath);
+  if (ext === 'wav' && rawPath !== wavPath) fs.copyFileSync(rawPath, wavPath);
+  if (!conversion.ok) {
+    const result = writeMediaDevicesProductCaptureEvidence({
+      ...base,
+      ok: false,
+      status: 'voice_mediadevices_product_capture_blocked',
+      firstBlocker: 'local_wav_conversion_failed',
+      rawAudioRef: rawPath,
+      wavPath,
+      conversion,
+    });
+    writeVoiceDeviceReadinessEvidence({
+      ok: false,
+      status: 'voice_device_readiness_blocked',
+      firstBlocker: 'local_wav_conversion_failed',
+      selectedDevice,
+    });
+    return result;
+  }
+  const audioStats = readWavAudioStats(wavPath);
+  const audioBytes = fs.existsSync(wavPath) ? fs.statSync(wavPath).size : 0;
+  const captureEvent = {
+    ...createVoiceCaptureEvent({
+      source: 'electron_mediadevices',
+      sessionId: 'rt_electron_mediadevices',
+      captureId,
+      durationMs: base.durationMs || audioStats.durationMs || 0,
+      sampleRate: 16000,
+    }),
+    vad: {
+      started_at: payload.startedAt || new Date().toISOString(),
+      ended_at: new Date().toISOString(),
+      confidence: audioStats.nonSilent ? 0.8 : 0,
+    },
+    evidence: {
+      audio_ref: wavPath,
+      audio_bytes: audioBytes,
+      raw_audio_logged: false,
+      raw_renderer_audio_ref: rawPath,
+      source_adapter: 'electron_renderer_mediadevices_mediarecorder',
+      conversion,
+      audio_stats: audioStats,
+      selected_device: {
+        ...selectedDevice,
+        trackSettings: payload.trackSettings || null,
+        constraints,
+      },
+      devices_after_permission: base.devicesAfterPermission,
+      levels: base.levels,
+    },
+  };
+  const bridgeCapture = await emitVoiceCaptureEventToBridge(captureEvent);
+  const stt = audioStats.nonSilent
+    ? await transcribeNativeCaptureFile(captureEvent, wavPath).catch((error) => ({ ok: false, error: error.message, transcript: '', status: 0 }))
+    : null;
+  const transcript = stt?.transcript || '';
+  const requestCaptured = meaningfulManualVoiceRequest(transcript);
+  const state = !audioStats.validWav || !audioStats.nonSilent
+    ? 'capture_no_level'
+    : !stt || stt.error || stt.status === 0
+      ? 'stt_route_failed'
+      : requestCaptured
+        ? 'stt_green'
+        : 'stt_semantic_red';
+  const ok = Boolean(requestCaptured && bridgeCapture?.ok && stt?.ok);
+  const firstBlocker = ok ? null
+    : state === 'capture_no_level' ? 'capture_no_level'
+      : state === 'stt_route_failed' ? 'stt_route_failed'
+        : 'stt_semantic_red';
+  const result = writeMediaDevicesProductCaptureEvidence({
+    ...base,
+    ok,
+    status: ok ? 'voice_mediadevices_product_capture_green' : 'voice_mediadevices_product_capture_red',
+    firstBlocker,
+    state,
+    rawAudioRef: rawPath,
+    wavPath,
+    afplayCommand: `/usr/bin/afplay ${JSON.stringify(wavPath)}`,
+    audioStats,
+    transcript,
+    semanticPass: requestCaptured,
+    captureEvent,
+    bridgeCapture,
+    stt,
+    localWhisper: {
+      endpoint: `${VOICE_WHISPER_URL.replace(/\/$/, '')}/inference`,
+      routeGreen: Boolean(stt?.ok),
+    },
+  });
+  writeVoiceDeviceReadinessEvidence({
+    ok: Boolean(selectedDevice.deviceId || selectedDevice.label),
+    status: 'voice_device_readiness_green',
+    selectedDevice,
+    currentDevice: selectedDevice,
+    devicesAfterPermission: base.devicesAfterPermission,
+    lastCaptureStatus: result.status,
+    lastCaptureState: state,
+  });
+  writeDiagnostic('latest-mediadevices-product-capture.json', result);
   return result;
 }
 
@@ -1559,8 +1916,13 @@ async function runManualVoiceInternal(payload = {}) {
     TARX_LOCAL_OPERATOR_BETA: LOCAL_OPERATOR_FLAGS.TARX_LOCAL_OPERATOR_BETA,
     TARX_VOICE_MANUAL_INTERNAL: VOICE_MANUAL_INTERNAL_ENABLED,
     TARX_VOICE_NATIVE_CAPTURE: VOICE_NATIVE_CAPTURE_ENABLED,
+    TARX_VOICE_MEDIADEVICES_INTERNAL: VOICE_MEDIADEVICES_INTERNAL_ENABLED,
+    TARX_VOICE_CAPTURE_DRIVER: VOICE_CAPTURE_DRIVER,
   };
-  const flagReady = flags.TARX_LOCAL_OPERATOR_BETA && flags.TARX_VOICE_MANUAL_INTERNAL && flags.TARX_VOICE_NATIVE_CAPTURE;
+  const mediaDevicesProduct = VOICE_CAPTURE_DRIVER === 'mediadevices';
+  const flagReady = flags.TARX_LOCAL_OPERATOR_BETA
+    && flags.TARX_VOICE_MANUAL_INTERNAL
+    && (mediaDevicesProduct ? flags.TARX_VOICE_MEDIADEVICES_INTERNAL : flags.TARX_VOICE_NATIVE_CAPTURE);
   if (!flagReady) {
     return {
       ok: false,
@@ -1578,7 +1940,10 @@ async function runManualVoiceInternal(payload = {}) {
       },
     };
   }
-  const capture = await runVoicePanelMicrophoneTest(payload);
+  const capture = payload.mediaDevicesResult
+    || (mediaDevicesProduct
+      ? await runMediaDevicesProductCapture(payload.mediaDevicesCapture || payload)
+      : await runVoicePanelMicrophoneTest(payload));
   const transcript = capture.transcript || capture.stt?.transcript || '';
   const requestCaptured = meaningfulManualVoiceRequest(transcript);
   const answer = manualVoiceAnswerFromEvidence(transcript);
@@ -1624,12 +1989,20 @@ async function runManualVoiceInternal(payload = {}) {
     input: {
       selectedDevice: capture.selectedDevice || null,
       transcript,
-      sourceEvidence: PRIME_VOICE_EVIDENCE_PATHS.liveCalibration,
+      sourceEvidence: mediaDevicesProduct ? PRIME_VOICE_EVIDENCE_PATHS.mediaDevicesProductCapture : PRIME_VOICE_EVIDENCE_PATHS.liveCalibration,
       wavPath: capture.wavPath || null,
       phraseCaptured: requestCaptured,
       classification: capture.state === 'stt_green' ? 'manual_voice_semantic_green' : 'wake_word_optional_for_manual_voice_test',
       captureState: capture.state,
       audioStats: capture.audioStats || null,
+    },
+    capture: {
+      source: mediaDevicesProduct ? 'electron_mediadevices' : 'electron_native',
+      wavPath: capture.wavPath || null,
+      audioStats: capture.audioStats || null,
+      selectedDevice: capture.selectedDevice || null,
+      productCaptureEvidence: mediaDevicesProduct ? PRIME_VOICE_EVIDENCE_PATHS.mediaDevicesProductCapture : null,
+      nativeQaFallbackEvidence: mediaDevicesProduct ? null : PRIME_VOICE_EVIDENCE_PATHS.liveCalibration,
     },
     answer: {
       text: answer,
@@ -1998,39 +2371,50 @@ function createWindow() {
     mainWindow.webContents.executeJavaScript(`
       (function() {
         function installVoiceDesktop() {
-        if (window.__tarxDesktopInjected) return;
+        var injectionVersion = 'mediadevices-product-v1';
+        var existingButton = document.getElementById('tarx-native-voice-cta');
+        var existingPanel = document.getElementById('tarx-native-voice-panel');
+        if (
+          window.__tarxDesktopInjected === injectionVersion &&
+          existingButton &&
+          existingPanel &&
+          existingPanel.getAttribute('data-tarx-voice-injection-version') === injectionVersion
+        ) return;
         var d = window.__TARX_DESKTOP__;
         if (!d || !d.voice) {
           window.__tarxDesktopVoiceRetryCount = (window.__tarxDesktopVoiceRetryCount || 0) + 1;
           if (window.__tarxDesktopVoiceRetryCount < 40) setTimeout(installVoiceDesktop, 250);
           return;
         }
-        window.__tarxDesktopInjected = true;
+        if (existingButton) existingButton.remove();
+        if (existingPanel) existingPanel.remove();
+        window.__tarxDesktopInjected = injectionVersion;
         if (d && d.getVersion) {
           d.getVersion().then(function(v) { window.__TARX_VERSION = v; });
         }
-        if (document.getElementById('tarx-native-voice-cta')) return;
         var voice = d.voice;
         var button = document.createElement('button');
         var panel = document.createElement('div');
         var active = false;
         var capabilities = null;
+        var mediaDeviceInventory = [];
         button.id = 'tarx-native-voice-cta';
         button.type = 'button';
         button.setAttribute('aria-label', 'Voice');
         button.innerHTML = '<span class="tarx-voice-dot"></span><span class="tarx-voice-label">Voice</span>';
         panel.id = 'tarx-native-voice-panel';
+        panel.setAttribute('data-tarx-voice-injection-version', injectionVersion);
         panel.hidden = true;
         panel.innerHTML = '' +
           '<label for="tarx-native-voice-device">Input</label>' +
           '<select id="tarx-native-voice-device"></select>' +
           '<div class="tarx-voice-status" id="tarx-native-voice-default">Detecting macOS default input...</div>' +
-          '<label for="tarx-native-voice-custom" style="margin-top:10px">Override selector/name</label>' +
-          '<input id="tarx-native-voice-custom" placeholder="Optional: :1 or exact device name" />' +
+          '<label for="tarx-native-voice-custom" style="margin-top:10px">Override microphone deviceId/label</label>' +
+          '<input id="tarx-native-voice-custom" placeholder="Optional: MediaDevices deviceId or exact label" />' +
           '<div class="tarx-voice-command" id="tarx-native-voice-override-warning" hidden></div>' +
           '<div class="tarx-voice-row">' +
           '  <button class="tarx-voice-primary" id="tarx-native-voice-ask" type="button" hidden>Ask TARX</button>' +
-          '  <button class="tarx-voice-primary" id="tarx-native-voice-start" type="button">Start</button>' +
+          '  <button class="tarx-voice-primary" id="tarx-native-voice-start" type="button">Native QA Start</button>' +
           '  <button id="tarx-native-voice-stop" type="button">Stop</button>' +
           '  <button class="tarx-voice-primary" id="tarx-native-voice-test" type="button">Test Microphone</button>' +
           '  <button id="tarx-native-voice-refresh" type="button">Refresh</button>' +
@@ -2055,7 +2439,7 @@ function createWindow() {
           '<div class="tarx-voice-evidence" id="tarx-native-voice-evidence">No voice evidence yet.</div>' +
           '<div class="tarx-voice-command" id="tarx-native-voice-command">Command execution is disabled from this app panel.</div>' +
           '<div class="tarx-voice-status" id="tarx-native-voice-status">Loading voice settings...</div>' +
-          '<div class="tarx-voice-note">Native capture only. Browser fallback and Supercomputer stay off.</div>';
+          '<div class="tarx-voice-note">MediaDevices product capture. Native AVFoundation is QA fallback. Browser fallback and Supercomputer stay off.</div>';
         var deviceSelect = panel.querySelector('#tarx-native-voice-device');
         var customInput = panel.querySelector('#tarx-native-voice-custom');
         var statusNode = panel.querySelector('#tarx-native-voice-status');
@@ -2104,14 +2488,20 @@ function createWindow() {
           return '<div><strong>' + escapeHtml(label) + '</strong><span>' + escapeHtml(shortValue(value)) + '</span></div>';
         }
         function toneForState(state) {
-          if (state === 'stt_green' || state === 'internal_loop_ready') return 'green';
-          if (state === 'stt_semantic_red' || state === 'capture_silent' || state === 'no_input_devices' || state === 'blocked_needs_mic_fix' || state === 'bridge_contracts_missing' || state === 'tts_missing') return 'red';
+          if (state === 'stt_green' || state === 'internal_loop_ready' || state === 'manual_loop_green') return 'green';
+          if (state === 'stt_semantic_red' || state === 'capture_silent' || state === 'capture_no_level' || state === 'no_input_devices' || state === 'permission_needed' || state === 'device_lost' || state === 'stt_route_failed' || state === 'blocked_needs_mic_fix' || state === 'bridge_contracts_missing' || state === 'tts_missing' || state === 'tts_failed' || state === 'playback_failed') return 'red';
           return 'neutral';
         }
         function selectedEvidenceDevice(snapshot) {
           var device = snapshot && snapshot.selectedDevice;
           if (!device) return 'none';
-          return (device.name || 'input') + (device.selector ? ' (' + device.selector + ')' : '');
+          return (device.label || device.name || 'input') + (device.deviceId ? ' (' + device.deviceId + ')' : (device.selector ? ' (' + device.selector + ')' : ''));
+        }
+        function sameVoiceDevice(a, b) {
+          if (!a || !b) return false;
+          if (a.deviceId && b.deviceId && a.deviceId === b.deviceId) return true;
+          if (a.groupId && b.groupId && a.groupId === b.groupId) return true;
+          return Boolean((a.label || a.name) && (b.label || b.name) && (a.label || a.name) === (b.label || b.name));
         }
         function renderPrimeEvidence(snapshot) {
           if (!snapshot) {
@@ -2135,58 +2525,67 @@ function createWindow() {
           var doctor = snapshot.evidence && snapshot.evidence.doctor && snapshot.evidence.doctor.json;
           var tts = snapshot.evidence && snapshot.evidence.ttsPlayback && snapshot.evidence.ttsPlayback.json;
           var manualLoop = snapshot.evidence && snapshot.evidence.manualLoop && snapshot.evidence.manualLoop.json;
+          var mediaDevicesProduct = snapshot.evidence && snapshot.evidence.mediaDevicesProductCapture && snapshot.evidence.mediaDevicesProductCapture.json;
+          var deviceReadiness = snapshot.evidence && snapshot.evidence.deviceReadiness && snapshot.evidence.deviceReadiness.json;
           var mediaDevicesSpike = snapshot.evidence && snapshot.evidence.mediaDevicesSpike && snapshot.evidence.mediaDevicesSpike.json;
           var pipecatSpike = snapshot.evidence && snapshot.evidence.pipecatSpike && snapshot.evidence.pipecatSpike.json;
           var liveAttempt = liveCalibration && liveCalibration.attempts && liveCalibration.attempts[0];
-          var audio = manualLoop && manualLoop.capture && manualLoop.capture.audioStats
+          var audio = mediaDevicesProduct && mediaDevicesProduct.audioStats
+            || manualLoop && manualLoop.capture && manualLoop.capture.audioStats
             || nativeStt && (nativeStt.audioStats || (nativeStt.freshCapture && nativeStt.freshCapture.audioStats))
             || liveAttempt && liveAttempt.audioStats
             || null;
-          var selected = manualLoop && manualLoop.input && manualLoop.input.selectedDevice
+          var selected = mediaDevicesProduct && mediaDevicesProduct.selectedDevice
+            || manualLoop && manualLoop.input && manualLoop.input.selectedDevice
+            || deviceReadiness && deviceReadiness.selectedDevice
             || nativeStt && nativeStt.captureEvent && nativeStt.captureEvent.evidence && nativeStt.captureEvent.evidence.selected_device;
-          var wav = manualLoop && manualLoop.capture && manualLoop.capture.wavPath
+          var wav = mediaDevicesProduct && mediaDevicesProduct.wavPath
+            || manualLoop && manualLoop.capture && manualLoop.capture.wavPath
             || nativeStt && (nativeStt.wavPath || (nativeStt.captureEvent && nativeStt.captureEvent.evidence && nativeStt.captureEvent.evidence.audio_ref))
             || liveAttempt && liveAttempt.wavPath;
-          var transcript = manualLoop && manualLoop.stt && manualLoop.stt.transcript
+          var transcript = mediaDevicesProduct && mediaDevicesProduct.transcript
+            || manualLoop && manualLoop.stt && manualLoop.stt.transcript
             || nativeStt && (nativeStt.rawTranscript || nativeStt.normalizedDisplayTranscript || (nativeStt.sttResult && nativeStt.sttResult.text))
             || liveAttempt && liveAttempt.transcript;
           var currentDevice = snapshot.selectedDevice;
           var lastGreenDevice = manualLoop && manualLoop.input && manualLoop.input.selectedDevice;
           var firstBlocker = manualLoop && manualLoop.status === 'voice_manual_loop_green'
             ? null
-            : ((manualLoop && manualLoop.firstBlocker) || (nativeStt && nativeStt.firstBlocker) || (liveCalibration && liveCalibration.firstBlocker));
-          var deviceDrift = lastGreenDevice && currentDevice && (lastGreenDevice.selector !== currentDevice.selector || lastGreenDevice.name !== currentDevice.name);
+            : ((mediaDevicesProduct && mediaDevicesProduct.firstBlocker) || (manualLoop && manualLoop.firstBlocker) || (nativeStt && nativeStt.firstBlocker) || (liveCalibration && liveCalibration.firstBlocker) || (deviceReadiness && deviceReadiness.firstBlocker));
+          var deviceDrift = lastGreenDevice && currentDevice && !sameVoiceDevice(lastGreenDevice, currentDevice);
           if (evidenceNode) {
-            if (!nativeStt && !liveCalibration && !manualLoop && !mediaDevicesSpike && !pipecatSpike && !inventory && !doctor && !tts) {
+            if (!nativeStt && !liveCalibration && !manualLoop && !mediaDevicesProduct && !deviceReadiness && !mediaDevicesSpike && !pipecatSpike && !inventory && !doctor && !tts) {
               evidenceNode.textContent = 'No voice evidence yet.';
             } else {
               evidenceNode.innerHTML = ''
                 + row('Inventory', inventory && inventory.status)
                 + row('Doctor', doctor && doctor.status)
+                + row('Device readiness', deviceReadiness && deviceReadiness.status)
+                + row('MediaDevices capture', mediaDevicesProduct && mediaDevicesProduct.status)
                 + row('Live calibration', liveCalibration && liveCalibration.status)
                 + row('Manual loop', manualLoop && manualLoop.status)
                 + row('MediaDevices spike', mediaDevicesSpike && mediaDevicesSpike.status)
                 + row('Pipecat spike', pipecatSpike && pipecatSpike.status)
                 + row('Native STT', nativeStt && nativeStt.status)
                 + row('First blocker', firstBlocker)
-                + row('Selected', selected ? (selected.name + ' ' + selected.selector) : selectedEvidenceDevice(snapshot))
-                + row('Last green proof', lastGreenDevice ? (lastGreenDevice.name + ' ' + lastGreenDevice.selector) : 'missing')
-                + row('Device drift', deviceDrift ? ('Last green proof used ' + lastGreenDevice.name + '. Current selected input is ' + currentDevice.name + '. Run a fresh test before trusting voice.') : 'none')
+                + row('Selected microphone', selected ? ((selected.label || selected.name || 'input') + ' ' + (selected.deviceId || selected.selector || '')) : selectedEvidenceDevice(snapshot))
+                + row('Last green proof', lastGreenDevice ? ((lastGreenDevice.label || lastGreenDevice.name || 'input') + ' ' + (lastGreenDevice.deviceId || lastGreenDevice.selector || '')) : 'missing')
+                + row('Device changed', deviceDrift ? ('Last green proof used ' + (lastGreenDevice.label || lastGreenDevice.name) + '. Current selected input is ' + (currentDevice.label || currentDevice.name) + '. Run a fresh test before trusting voice.') : 'none')
                 + row('WAV', wav)
                 + row('RMS / peak / duration', audio ? ((audio.rms || 0) + ' / ' + (audio.peakAmplitude || 0) + ' / ' + (audio.duration_ms || audio.durationMs || 0) + 'ms') : 'missing')
                 + row('Transcript', transcript)
                 + row('TTS playback', tts && tts.status)
-                + row('Evidence JSON', snapshot.evidence && snapshot.evidence.nativeStt && snapshot.evidence.nativeStt.file);
+                + row('Evidence JSON', mediaDevicesProduct ? snapshot.evidence.mediaDevicesProductCapture.file : (snapshot.evidence && snapshot.evidence.nativeStt && snapshot.evidence.nativeStt.file));
             }
           }
           var command = snapshot.commands && (state === 'stt_semantic_red' || state === 'capture_non_silent' ? snapshot.commands.nativeStt : snapshot.commands.doctor);
           if (commandNode) commandNode.textContent = 'Command execution is disabled here. Copy/run: ' + (command || 'No command available.');
-          var devices = inventory && inventory.avFoundationInputs || [];
-          if (devices.length === 1 && /razer kiyo pro/i.test(String(devices[0].name || '')) && state === 'stt_semantic_red') {
-            setStatus('Prime can capture audio from Razer Kiyo Pro, but Whisper is not detecting clear speech. Select a different microphone in macOS Sound Input, then Refresh.');
+          var devices = deviceReadiness && deviceReadiness.devicesAfterPermission || [];
+          if (devices.length === 1 && /razer kiyo pro/i.test(String(devices[0].label || devices[0].name || '')) && state === 'stt_semantic_red') {
+            setStatus('TARX can capture audio from Razer Kiyo Pro, but Whisper is not detecting clear speech. Select a different microphone in macOS Sound Input, then Refresh.');
           }
           if (deviceDrift) {
-            setStatus('Last green proof used ' + lastGreenDevice.name + '. Current selected input is ' + currentDevice.name + '. Run a fresh test before trusting voice.');
+            setStatus('Last green proof used ' + (lastGreenDevice.label || lastGreenDevice.name) + '. Current selected input is ' + (currentDevice.label || currentDevice.name) + '. Run a fresh test before trusting voice.');
           }
         }
         function positionPanelNearButton() {
@@ -2210,19 +2609,20 @@ function createWindow() {
           var custom = customInput && customInput.value ? customInput.value.trim() : '';
           if (custom) return custom;
           if (deviceSelect && deviceSelect.value === '__missing__') return '';
-          return deviceSelect && deviceSelect.value ? deviceSelect.value : '';
+          return deviceSelect && deviceSelect.value ? deviceSelect.value : 'default';
         }
         function deviceLabel(device) {
           if (!device) return 'unknown';
-          return (device.name || 'input') + (device.selector ? ' (' + device.selector + ')' : '');
+          return (device.label || device.name || 'input') + (device.deviceId ? ' (' + device.deviceId + ')' : (device.selector ? ' (' + device.selector + ')' : ''));
         }
-        function updateOverrideWarning(native) {
+        function updateOverrideWarning(native, mediaDevices) {
           var override = selectedDeviceValue();
+          if (override === 'default') override = '';
           var selected = null;
-          var devices = native && native.availableInputDevices ? native.availableInputDevices : [];
+          var devices = mediaDevices && mediaDevices.length ? mediaDevices : (native && native.availableInputDevices ? native.availableInputDevices : []);
           if (override) {
             selected = devices.filter(function(device) {
-              return device.selector === override || String(device.index) === String(override).replace(/^:/, '') || device.name === override;
+              return device.deviceId === override || device.id === override || device.label === override || device.selector === override || String(device.index) === String(override).replace(/^:/, '') || device.name === override;
             })[0] || { name: override, selector: '' };
           }
           if (overrideWarningNode) {
@@ -2254,49 +2654,56 @@ function createWindow() {
           }
           positionPanelNearButton();
         }
-        function renderCapabilities(next) {
+        function renderCapabilities(next, mediaDevices) {
           capabilities = next || capabilities;
+          mediaDeviceInventory = Array.isArray(mediaDevices) ? mediaDevices : mediaDeviceInventory;
           var native = capabilities && capabilities.nativeCapture;
-          var devices = native && native.availableInputDevices ? native.availableInputDevices : [];
+          var flags = capabilities && capabilities.featureFlags || {};
+          var useMediaDevices = flags.TARX_VOICE_MEDIADEVICES_INTERNAL && flags.TARX_VOICE_CAPTURE_DRIVER === 'mediadevices';
+          var devices = useMediaDevices ? mediaDeviceInventory : (native && native.availableInputDevices ? native.availableInputDevices : []);
           deviceSelect.innerHTML = '';
-          var defaultName = native && native.systemDefaultInput && native.systemDefaultInput.name ? native.systemDefaultInput.name : 'unknown';
+          var defaultMedia = mediaDeviceInventory.filter(function(device) { return device.default || device.deviceId === 'default' || device.id === 'default'; })[0] || mediaDeviceInventory[0] || null;
+          var defaultName = useMediaDevices
+            ? ((defaultMedia && (defaultMedia.label || defaultMedia.name)) || 'permission needed')
+            : (native && native.systemDefaultInput && native.systemDefaultInput.name ? native.systemDefaultInput.name : 'unknown');
           var defaultSelector = native && native.selectedDevice && native.selectedDevice.source === 'macos_default_input' ? native.selectedDevice.selector : '';
           var defaultOption = document.createElement('option');
-          defaultOption.value = '';
-          defaultOption.textContent = 'Use macOS Default Input' + (defaultName !== 'unknown' ? ' - ' + defaultName + (defaultSelector ? ' (' + defaultSelector + ')' : '') : '');
+          defaultOption.value = useMediaDevices ? 'default' : '';
+          defaultOption.textContent = 'Use macOS Default Input' + (defaultName !== 'unknown' ? ' - ' + defaultName + (!useMediaDevices && defaultSelector ? ' (' + defaultSelector + ')' : '') : '');
           deviceSelect.appendChild(defaultOption);
           if (!devices.length) {
             var empty = document.createElement('option');
             empty.value = '__missing__';
-            empty.textContent = 'No AVFoundation inputs';
+            empty.textContent = useMediaDevices ? 'No microphones visible to MediaDevices' : 'No AVFoundation QA inputs';
             deviceSelect.appendChild(empty);
           } else {
             devices.forEach(function(device) {
               var option = document.createElement('option');
-              option.value = device.selector || String(device.index);
-              option.textContent = '[' + device.index + '] ' + device.name + ' (' + device.selector + ')';
+              option.value = useMediaDevices ? (device.deviceId || device.id || 'default') : (device.selector || String(device.index));
+              option.textContent = useMediaDevices
+                ? ((device.default ? 'Default - ' : '') + (device.label || device.name || 'Microphone') + (device.deviceId && device.deviceId !== 'default' ? ' (' + device.deviceId.slice(0, 8) + '...)' : ''))
+                : '[' + device.index + '] ' + device.name + ' (' + device.selector + ')';
               deviceSelect.appendChild(option);
             });
           }
           var requested = native && native.selectedDevice && native.selectedDevice.requested;
-          deviceSelect.value = requested || '';
-          if (defaultNode) defaultNode.textContent = 'macOS default input: ' + defaultName + (defaultSelector ? ' ' + defaultSelector : '');
-          updateOverrideWarning(native);
-          var flags = capabilities && capabilities.featureFlags || {};
-          var manualEnabled = flags.TARX_LOCAL_OPERATOR_BETA && flags.TARX_VOICE_MANUAL_INTERNAL && flags.TARX_VOICE_NATIVE_CAPTURE;
+          deviceSelect.value = useMediaDevices ? 'default' : (requested || '');
+          if (defaultNode) defaultNode.textContent = 'macOS default input: ' + defaultName + (useMediaDevices ? ' · product driver: MediaDevices' : (defaultSelector ? ' ' + defaultSelector : ''));
+          updateOverrideWarning(native, mediaDeviceInventory);
+          var manualEnabled = flags.TARX_LOCAL_OPERATOR_BETA && flags.TARX_VOICE_MANUAL_INTERNAL && (useMediaDevices ? flags.TARX_VOICE_MEDIADEVICES_INTERNAL : flags.TARX_VOICE_NATIVE_CAPTURE);
           var mediaDevicesSpikeEnabled = flags.TARX_VOICE_MEDIADEVICES_INTERNAL;
           var pipecatSpikeEnabled = flags.TARX_VOICE_PIPECAT_INTERNAL;
           if (askButton) askButton.hidden = !manualEnabled;
           if (mediaDevicesSpikeButton) mediaDevicesSpikeButton.hidden = !mediaDevicesSpikeEnabled;
           if (pipecatSpikeButton) pipecatSpikeButton.hidden = !pipecatSpikeEnabled;
-          var hasAirPods = devices.some(function(device) { return /airpods/i.test(device.name || ''); });
+          var hasAirPods = devices.some(function(device) { return /airpods/i.test(device.label || device.name || ''); });
           if (!hasAirPods && defaultName !== 'unknown' && /airpods/i.test(defaultName) && statusNode) {
-            statusNode.textContent = 'AirPods are connected, but not visible to TARX/AVFoundation. Select them in macOS Sound Input, reconnect Bluetooth, or use a wired/built-in mic.';
+            statusNode.textContent = 'AirPods are connected, but not visible to TARX/MediaDevices. Select them in macOS Sound Input, reconnect Bluetooth, or use a wired/built-in mic.';
             return;
           }
-          setStatus('Mode: ' + (requested ? 'override' : 'macOS default input') + ' · Native: ' + (native && native.available ? 'available' : 'blocked'));
+          setStatus('Mode: ' + (selectedDeviceValue() !== 'default' ? 'override' : 'macOS default input') + ' · Product driver: ' + (useMediaDevices ? 'MediaDevices' : 'native QA fallback'));
           if (!manualEnabled && statusNode) {
-            setStatus('Manual Voice Test is internal-flagged. Set TARX_LOCAL_OPERATOR_BETA=1 TARX_VOICE_MANUAL_INTERNAL=1 TARX_VOICE_NATIVE_CAPTURE=1 to enable Ask TARX.');
+            setStatus('Manual Voice Test is internal-flagged. Set TARX_LOCAL_OPERATOR_BETA=1 TARX_VOICE_MANUAL_INTERNAL=1 TARX_VOICE_MEDIADEVICES_INTERNAL=1 TARX_VOICE_CAPTURE_DRIVER=mediadevices to enable Ask TARX.');
           }
         }
         function refreshVoiceSettings() {
@@ -2305,12 +2712,14 @@ function createWindow() {
           return Promise.all([
             voice.getRuntimeCapabilities(),
             voice.getPrimeEvidence ? voice.getPrimeEvidence() : Promise.resolve(null),
+            voice.listInputDevices ? voice.listInputDevices({ requestPermission: true }) : Promise.resolve([]),
           ]).then(function(results) {
             var next = results[0];
             var evidence = results[1];
-            renderCapabilities(next);
+            var mediaDevices = results[2] || [];
+            renderCapabilities(next, mediaDevices);
             renderPrimeEvidence(evidence);
-            if (next && next.featureFlags && next.featureFlags.TARX_VOICE_NATIVE_CAPTURE) {
+            if (next && next.featureFlags && (next.featureFlags.TARX_VOICE_CAPTURE_DRIVER === 'mediadevices' ? next.featureFlags.TARX_VOICE_MEDIADEVICES_INTERNAL : next.featureFlags.TARX_VOICE_NATIVE_CAPTURE)) {
               setVoiceState(active ? 'listening' : 'idle', active ? 'Listening' : 'Voice');
             } else {
               setVoiceState('blocked', 'Voice setup');
@@ -2384,8 +2793,8 @@ function createWindow() {
           setVoiceState('capture_running', 'Ask TARX...');
           if (stateLabel) stateLabel.textContent = 'capture_running';
           setStatus('Speak your request now. Manual button mode does not require wake word.');
-          if (commandNode) commandNode.textContent = 'Running internal Manual Voice locally: native capture, local Whisper, local answer, local TTS playback.';
-          voice.askManualInternal({ device: selectedDeviceValue() }).then(function(result) {
+          if (commandNode) commandNode.textContent = 'Running internal Manual Voice locally: MediaDevices capture, local WAV conversion, local Whisper, local answer, local TTS playback.';
+          voice.askManualInternal({ deviceId: selectedDeviceValue(), durationMs: 6500 }).then(function(result) {
             var passed = result && result.status === 'voice_manual_loop_green';
             setVoiceState(passed ? 'idle' : 'blocked', passed ? 'Voice' : 'Voice blocked');
             if (stateLabel) stateLabel.textContent = passed ? 'internal_loop_ready' : (result && result.firstBlocker || 'blocked_needs_mic_fix');
@@ -2404,9 +2813,9 @@ function createWindow() {
           testButton.disabled = true;
           setVoiceState('capture_running', 'Testing...');
           if (stateLabel) stateLabel.textContent = 'capture_running';
-          setStatus('Speak now: TARS, what are we working on today?');
-          if (commandNode) commandNode.textContent = 'Capturing locally from Electron. Browser fallback and Supercomputer remain off.';
-          voice.testMicrophone({ device: selectedDeviceValue() }).then(function(result) {
+          setStatus('Speak now: What are we working on today? Manual button mode does not require wake word.');
+          if (commandNode) commandNode.textContent = 'Capturing from Electron MediaDevices, converting locally, then sending to local Whisper. Browser fallback and Supercomputer remain off.';
+          voice.testMicrophone({ deviceId: selectedDeviceValue(), durationMs: 6500 }).then(function(result) {
             var passed = result && result.state === 'stt_green';
             setVoiceState(passed ? 'idle' : 'blocked', passed ? 'Voice' : 'Voice blocked');
             if (stateLabel) stateLabel.textContent = result && result.state ? result.state : 'stt_semantic_red';
@@ -2421,12 +2830,12 @@ function createWindow() {
           });
         });
         refreshButton.addEventListener('click', refreshVoiceSettings);
-        deviceSelect.addEventListener('change', function() { updateOverrideWarning(capabilities && capabilities.nativeCapture); });
-        customInput.addEventListener('input', function() { updateOverrideWarning(capabilities && capabilities.nativeCapture); });
+        deviceSelect.addEventListener('change', function() { updateOverrideWarning(capabilities && capabilities.nativeCapture, mediaDeviceInventory); });
+        customInput.addEventListener('input', function() { updateOverrideWarning(capabilities && capabilities.nativeCapture, mediaDeviceInventory); });
         clearOverrideButton.addEventListener('click', function() {
           if (customInput) customInput.value = '';
-          if (deviceSelect) deviceSelect.value = '';
-          updateOverrideWarning(capabilities && capabilities.nativeCapture);
+          if (deviceSelect) deviceSelect.value = 'default';
+          updateOverrideWarning(capabilities && capabilities.nativeCapture, mediaDeviceInventory);
           setStatus('Override cleared. Voice will use macOS default input on next capture.');
         });
         function openSetting(label, opener) {
@@ -2450,9 +2859,9 @@ function createWindow() {
           if (commandNode) commandNode.textContent = 'Copied Voice Doctor command. Command execution is disabled from this app panel: ' + command;
         });
         copyCommandButton.addEventListener('click', function() {
-          var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && unset TARX_VOICE_NATIVE_CAPTURE_DEVICE && TARX_VOICE_NATIVE_CAPTURE=1 npm run qa:voice-native-stt';
+          var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && TARX_VOICE_MEDIADEVICES_INTERNAL=1 TARX_VOICE_CAPTURE_DRIVER=mediadevices npm run qa:voice-mediadevices-product-capture';
           if (d.copyText) d.copyText(command);
-          if (commandNode) commandNode.textContent = 'Copied native STT proof command: ' + command;
+          if (commandNode) commandNode.textContent = 'Copied MediaDevices product capture QA command: ' + command;
         });
         if (mediaDevicesSpikeButton) {
           mediaDevicesSpikeButton.addEventListener('click', function() {
@@ -3304,8 +3713,14 @@ ipcMain.handle('tarx:voice-request-permission', async () => requestVoicePermissi
 
 ipcMain.handle('tarx:voice-runtime-capabilities', () => voiceRuntimeCapabilities());
 ipcMain.handle('tarx:voice-prime-evidence', async () => primeVoiceEvidenceSnapshot());
-ipcMain.handle('tarx:voice-test-microphone', async (_event, payload = {}) => runVoicePanelMicrophoneTest(payload));
+ipcMain.handle('tarx:voice-test-microphone', async (_event, payload = {}) => {
+  if (payload.mediaDevicesCapture || payload.mediaDevicesResult || payload.audioBuffer || payload.audioBytes) {
+    return payload.mediaDevicesResult || runMediaDevicesProductCapture(payload.mediaDevicesCapture || payload);
+  }
+  return runVoicePanelMicrophoneTest(payload);
+});
 ipcMain.handle('tarx:voice-manual-internal-ask', async (_event, payload = {}) => runManualVoiceInternal(payload));
+ipcMain.handle('tarx:voice-mediadevices-product-capture', async (_event, payload = {}) => runMediaDevicesProductCapture(payload));
 ipcMain.handle('tarx:voice-mediadevices-spike-evidence', async (_event, payload = {}) => {
   if (!VOICE_MEDIADEVICES_INTERNAL_ENABLED) {
     return writeMediaDevicesSpikeEvidence({
@@ -3528,7 +3943,11 @@ ipcMain.handle('tarx:voice-native-capture-stop', async () => {
 });
 
 ipcMain.handle('tarx:voice-capture-event', async (_event, payload = {}) => {
-  const source = payload.source === 'electron_native' ? 'electron_native' : 'browser_fallback';
+  const source = payload.source === 'electron_native'
+    ? 'electron_native'
+    : payload.source === 'electron_mediadevices'
+      ? 'electron_mediadevices'
+      : 'browser_fallback';
   const captureEvent = {
     ...createVoiceCaptureEvent({
       source,

@@ -15,6 +15,8 @@ const evidencePaths = {
   nativeStt: '/Users/master/.tarx/runs/voice-native-stt/latest.json',
   liveCalibration: '/Users/master/.tarx/runs/voice-live-calibration/latest.json',
   manualLoop: '/Users/master/.tarx/runs/voice-manual-loop/latest.json',
+  mediaDevicesProductCapture: '/Users/master/.tarx/runs/voice-mediadevices-product-capture/latest.json',
+  deviceReadiness: '/Users/master/.tarx/runs/voice-device-readiness/latest.json',
   mediaDevicesSpike: '/Users/master/.tarx/runs/voice-mediadevices-spike/latest.json',
   pipecatSpike: '/Users/master/.tarx/runs/voice-pipecat-spike/latest.json',
   ttsPlayback: '/Users/master/.tarx/runs/voice-tts-playback/latest.json',
@@ -40,8 +42,10 @@ record(checks, 'wav_path_rendered', main.includes("row('WAV'") && main.includes(
 record(checks, 'rms_peak_duration_rendered', main.includes("row('RMS / peak / duration'"), null);
 record(checks, 'transcript_rendered', main.includes("row('Transcript'"), null);
 record(checks, 'first_blocker_rendered', main.includes("row('First blocker'"), null);
-record(checks, 'selected_device_rendered', main.includes("row('Selected'"), null);
+record(checks, 'selected_device_rendered', main.includes("row('Selected microphone'"), null);
 record(checks, 'live_calibration_rendered', main.includes("row('Live calibration'") && main.includes('liveCalibration'), null);
+record(checks, 'mediadevices_product_capture_rendered', main.includes("row('MediaDevices capture'") && main.includes('mediaDevicesProduct'), null);
+record(checks, 'device_readiness_rendered', main.includes("row('Device readiness'") && main.includes('deviceReadiness'), null);
 record(checks, 'mediadevices_spike_rendered', main.includes("row('MediaDevices spike'") && main.includes('mediaDevicesSpike'), null);
 record(checks, 'pipecat_spike_rendered', main.includes("row('Pipecat spike'") && main.includes('pipecatSpike'), null);
 record(checks, 'test_microphone_writes_evidence', main.includes('writeVoicePanelTestEvidence') && main.includes('electron_panel_manual_single_attempt'), null);

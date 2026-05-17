@@ -6,7 +6,7 @@ Updated: 2026-05-17
 
 Recommendation: **RELEASE STABILITY GREEN FOR BLACK-SCREEN RECOVERY GATE**
 
-The Skynet `Refresh TARX` black-screen incident is recovered manually, but root cause remains unknown. This is not a Local Operator beta, not production voice, and not wake-word mode. The Electron control plane stays hidden by default and Manual Voice internal testing is allowed only when `TARX_LOCAL_OPERATOR_BETA=1`, `TARX_VOICE_MANUAL_INTERNAL=1`, and `TARX_VOICE_NATIVE_CAPTURE=1` are all set. Models are not bundled, Supercomputer remains off, browser fallback remains off, and Computer Use execution remains disabled.
+The Skynet `Refresh TARX` black-screen incident is recovered manually, but root cause remains unknown. This is not a Local Operator beta, not production voice, and not wake-word mode. The Electron control plane stays hidden by default and Manual Voice internal testing is allowed only when `TARX_LOCAL_OPERATOR_BETA=1` and `TARX_VOICE_MANUAL_INTERNAL=1` are set. The product microphone path is Electron MediaDevices behind `TARX_VOICE_MEDIADEVICES_INTERNAL=1` and `TARX_VOICE_CAPTURE_DRIVER=mediadevices`; ffmpeg / AVFoundation remains QA fallback only. Models are not bundled, Supercomputer remains off, browser fallback remains off, and Computer Use execution remains disabled.
 
 ## Current Status
 
@@ -20,9 +20,10 @@ The Skynet `Refresh TARX` black-screen incident is recovered manually, but root 
 | Signed Build Validation | GREEN | `npm run build` completed; app is notarized and accepted by `spctl`. |
 | Local Operator Beta | BLOCKED | Do not run combined beta yet. |
 | Manual Voice Internal Test | GREEN | Product label: Manual Voice Internal Ready. Manual Voice button / push-to-talk does not require wake word; latest manual loop proof is green. |
-| Manual Voice Product Path | GREEN / INTERNAL ONLY | Electron `Ask TARX` path is behind `TARX_LOCAL_OPERATOR_BETA=1`, `TARX_VOICE_MANUAL_INTERNAL=1`, and `TARX_VOICE_NATIVE_CAPTURE=1`. |
+| Manual Voice Product Capture | GREEN / INTERNAL | Electron `Ask TARX` product capture uses MediaDevices behind `TARX_VOICE_MEDIADEVICES_INTERNAL=1` and `TARX_VOICE_CAPTURE_DRIVER=mediadevices`. |
+| Manual Voice Product Path | GREEN / INTERNAL ONLY | Electron `Ask TARX` path is behind `TARX_LOCAL_OPERATOR_BETA=1`, `TARX_VOICE_MANUAL_INTERNAL=1`, and the internal MediaDevices product driver. |
 | Current ffmpeg / AVFoundation Voice Path | QA FALLBACK / DIAGNOSTIC | Keep for proof, doctor, WAV evidence, and regression checks. Do not treat as the long-term product microphone UX. |
-| MediaDevices Product Path | SPIKE / DRAFT | Internal renderer spike is behind `TARX_VOICE_MEDIADEVICES_INTERNAL=1`; it lists devices, requests mic permission, captures a short metadata-only audio blob, and writes local evidence. |
+| MediaDevices Voice Path | GREEN / INTERNAL | Product path lists renderer-visible microphones, requests mic permission, uses MediaDevices `default` or explicit `deviceId`, captures with MediaRecorder, converts locally to 16 kHz mono WAV, and routes to local Whisper. |
 | Pipecat Orchestration | SCAFFOLDED / BLOCKED | Internal scaffold is behind `TARX_VOICE_PIPECAT_INTERNAL=1`; current blocker is missing Pipecat dependency/adapters, reported honestly as `pipecat_spike_scaffolded_not_running`. |
 | Runtime Spine Performance | AUDIT / DEGRADED-AWARE | `qa:runtime-spine-performance` separates shallow health from readiness and records fixed-budget Bridge/MCP/runtime probes. |
 | Runtime Spine Readiness | AUDIT | `qa:runtime-spine-readiness` consumes voice, vision, action, MCP, and route-truth evidence without rerunning heavy flows. |
@@ -52,6 +53,9 @@ Forbidden payload scan: **0 hits**. No Whisper, Gemma, Vision, TTS model payload
 - `/Users/master/.tarx/runs/voice-manual-loop/latest.json`
 - `/Users/master/.tarx/runs/voice-manual-intelligence/latest.json`
 - `/Users/master/.tarx/runs/voice-manual-electron-path/latest.json`
+- `/Users/master/.tarx/runs/voice-mediadevices-product-capture/latest.json`
+- `/Users/master/.tarx/runs/voice-device-readiness/latest.json`
+- `/Users/master/.tarx/runs/voice-device-drift/latest.json`
 - `/Users/master/.tarx/runs/voice-mediadevices-spike/latest.json`
 - `/Users/master/.tarx/runs/voice-pipecat-spike/latest.json`
 - `/Users/master/.tarx/runs/voice-tts-playback/latest.json`
@@ -63,7 +67,7 @@ Forbidden payload scan: **0 hits**. No Whisper, Gemma, Vision, TTS model payload
 
 ## Next Blocker
 
-Manual Voice button is unblocked for internal product testing. The next blocker is not infrastructure: wake-word / always-on voice still needs a fresh spoken Electron-native WAV that includes an accepted `TARX`/`TARS` wake-word transcript. Do not use the manual button proof as production voice or wake-word proof.
+Manual Voice button is unblocked for internal product testing. The next blocker is not capture plumbing: run a fresh in-app product turn through Electron MediaDevices and then polish the turn UX. Wake-word / always-on voice still needs a separate accepted `TARX`/`TARS` wake-word transcript. Do not use the manual button proof as production voice or wake-word proof.
 
 Pipecat orchestration has a local scaffold and evidence contract. It is not green until the Pipecat runtime and adapters are installed and connected.
 

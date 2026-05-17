@@ -24,6 +24,13 @@ const TARX_VOICE_UX_STATES = {
   unavailable: 'Voice unavailable, try fallback',
 };
 
+const TARX_MEDIADEVICES_AUDIO_CONSTRAINTS = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  channelCount: 1,
+};
+
 function createTarxVoiceBridge() {
   let stream = null;
   let recorder = null;
@@ -32,6 +39,8 @@ function createTarxVoiceBridge() {
   let analyser = null;
   let levelTimer = null;
   let activeSource = null;
+  let deviceManagerState = { devices: [], permissionRefreshed: false, lastRefreshAt: null, lastError: null };
+  let deviceChangeListenerInstalled = false;
   const statusHandlers = new Set();
   const transcriptHandlers = new Set();
   const errorHandlers = new Set();
@@ -85,17 +94,205 @@ function createTarxVoiceBridge() {
     return data;
   }
 
-  async function listMediaDevicesInputs() {
-    if (!navigator.mediaDevices?.enumerateDevices) return [];
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    return devices.filter((device) => device.kind === 'audioinput').map((device, index) => ({
+  function stopTracks(mediaStream) {
+    if (mediaStream) mediaStream.getTracks().forEach((track) => track.stop());
+  }
+
+  function normalizeMediaDevice(device, index = 0) {
+    return {
       index,
       id: device.deviceId,
-      label: device.label,
+      deviceId: device.deviceId,
+      label: device.label || (device.deviceId === 'default' ? 'macOS Default Input' : ''),
       groupId: device.groupId,
       kind: device.kind,
       default: index === 0 || device.deviceId === 'default',
-    }));
+    };
+  }
+
+  async function requestMediaDevicePermissionForLabels() {
+    if (!navigator.mediaDevices?.getUserMedia) return { ok: false, firstBlocker: 'mediadevices_getusermedia_unavailable' };
+    let permissionStream = null;
+    try {
+      permissionStream = await navigator.mediaDevices.getUserMedia({ audio: TARX_MEDIADEVICES_AUDIO_CONSTRAINTS });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, firstBlocker: error?.name === 'NotAllowedError' ? 'permission_needed' : 'permission_or_device_unavailable', errorDetail: voiceErrorPayload(error, 'permission_or_device_unavailable') };
+    } finally {
+      stopTracks(permissionStream);
+    }
+  }
+
+  async function listMediaDevicesInputs({ requestPermission = false } = {}) {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    if (requestPermission) {
+      const permission = await requestMediaDevicePermissionForLabels();
+      deviceManagerState.permissionRefreshed = Boolean(permission.ok);
+      if (!permission.ok) deviceManagerState.lastError = permission;
+    }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devices.filter((device) => device.kind === 'audioinput').map(normalizeMediaDevice);
+    inputs.sort((a, b) => Number(!a.default) - Number(!b.default));
+    deviceManagerState = {
+      ...deviceManagerState,
+      devices: inputs,
+      lastRefreshAt: new Date().toISOString(),
+      lastError: inputs.length ? null : deviceManagerState.lastError,
+    };
+    return inputs;
+  }
+
+  function installDeviceChangeListener() {
+    if (deviceChangeListenerInstalled || !navigator.mediaDevices?.addEventListener) return;
+    deviceChangeListenerInstalled = true;
+    navigator.mediaDevices.addEventListener('devicechange', async () => {
+      const devices = await listMediaDevicesInputs({ requestPermission: false }).catch(() => []);
+      emit(statusHandlers, { state: 'device_changed', devices, listening: false });
+    });
+  }
+
+  function selectedDeviceFromList(devices, deviceId = 'default') {
+    const requested = deviceId || 'default';
+    if (requested === 'default') return devices.find((device) => device.default || device.deviceId === 'default') || devices[0] || null;
+    return devices.find((device) => device.deviceId === requested || device.id === requested || device.label === requested) || null;
+  }
+
+  function mediaRecorderMimeType() {
+    if (typeof MediaRecorder === 'undefined') return '';
+    if (MediaRecorder.isTypeSupported?.('audio/webm;codecs=opus')) return 'audio/webm;codecs=opus';
+    if (MediaRecorder.isTypeSupported?.('audio/ogg;codecs=opus')) return 'audio/ogg;codecs=opus';
+    if (MediaRecorder.isTypeSupported?.('audio/webm')) return 'audio/webm';
+    return '';
+  }
+
+  function mediaConstraintsForDevice(deviceId = 'default') {
+    const audio = { ...TARX_MEDIADEVICES_AUDIO_CONSTRAINTS };
+    if (deviceId && deviceId !== 'default') audio.deviceId = { exact: deviceId };
+    return { audio };
+  }
+
+  async function captureManualTurn({ deviceId = 'default', durationMs = 6500 } = {}) {
+    const capabilities = await ipcRenderer.invoke('tarx:voice-runtime-capabilities').catch(() => null);
+    if (!capabilities?.featureFlags?.TARX_VOICE_MEDIADEVICES_INTERNAL || capabilities?.featureFlags?.TARX_VOICE_CAPTURE_DRIVER !== 'mediadevices') {
+      return {
+        ok: false,
+        state: 'device_lost',
+        status: 'voice_mediadevices_product_capture_blocked',
+        firstBlocker: 'mediadevices_product_driver_disabled',
+        routeTruth: capabilities?.routeTruth || null,
+      };
+    }
+    installDeviceChangeListener();
+    const before = await listMediaDevicesInputs({ requestPermission: false }).catch(() => []);
+    const after = await listMediaDevicesInputs({ requestPermission: true }).catch(() => before);
+    if (!after.length) {
+      return ipcRenderer.invoke('tarx:voice-mediadevices-product-capture', {
+        ok: false,
+        firstBlocker: 'no_input_devices',
+        devicesBeforePermission: before,
+        devicesAfterPermission: after,
+      });
+    }
+    const selected = selectedDeviceFromList(after, deviceId);
+    if (!selected) {
+      return ipcRenderer.invoke('tarx:voice-mediadevices-product-capture', {
+        ok: false,
+        firstBlocker: 'device_lost',
+        selectedDevice: { deviceId, label: deviceId },
+        devicesBeforePermission: before,
+        devicesAfterPermission: after,
+      });
+    }
+    let captureStream = null;
+    let recorderInstance = null;
+    let meterContext = null;
+    let meterTimer = null;
+    const captureChunks = [];
+    let sampleCount = 0;
+    let sumLevel = 0;
+    let peakLevel = 0;
+    const startedAt = new Date().toISOString();
+    try {
+      captureStream = await navigator.mediaDevices.getUserMedia(mediaConstraintsForDevice(selected.deviceId));
+      const track = captureStream.getAudioTracks()[0] || null;
+      const trackSettings = track?.getSettings?.() || {};
+      const constraints = mediaConstraintsForDevice(selected.deviceId).audio;
+      try {
+        meterContext = new AudioContext();
+        const source = meterContext.createMediaStreamSource(captureStream);
+        const meter = meterContext.createAnalyser();
+        meter.fftSize = 512;
+        source.connect(meter);
+        const data = new Uint8Array(meter.fftSize);
+        meterTimer = setInterval(() => {
+          meter.getByteTimeDomainData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i += 1) {
+            const v = (data[i] - 128) / 128;
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / data.length);
+          sampleCount += 1;
+          sumLevel += rms;
+          if (rms > peakLevel) peakLevel = rms;
+          emit(statusHandlers, { state: 'listening', listening: true, inputLevel: rms, source: 'electron_mediadevices' });
+        }, 80);
+      } catch (error) {
+        emit(errorHandlers, { message: error?.message || 'audio_meter_failed' });
+      }
+      const mimeType = mediaRecorderMimeType();
+      recorderInstance = mimeType ? new MediaRecorder(captureStream, { mimeType }) : new MediaRecorder(captureStream);
+      recorderInstance.ondataavailable = (event) => { if (event.data?.size) captureChunks.push(event.data); };
+      const stopped = new Promise((resolve) => { recorderInstance.onstop = () => resolve(); });
+      recorderInstance.start(250);
+      activeSource = 'electron_mediadevices';
+      await new Promise((resolve) => setTimeout(resolve, Math.max(1000, Math.min(Number(durationMs) || 6500, 15000))));
+      recorderInstance.stop();
+      await stopped;
+      const blob = new Blob(captureChunks, { type: recorderInstance.mimeType || mimeType || 'audio/webm' });
+      const arrayBuffer = await blobToArrayBuffer(blob);
+      const resolvedSelected = after.find((device) => device.deviceId === trackSettings.deviceId || device.id === trackSettings.deviceId) || selected;
+      return ipcRenderer.invoke('tarx:voice-mediadevices-product-capture', {
+        audioBuffer: arrayBuffer,
+        mimeType: blob.type,
+        durationMs: Number(durationMs) || 6500,
+        startedAt,
+        selectedDevice: {
+          ...resolvedSelected,
+          trackSettings,
+          constraints,
+        },
+        devicesBeforePermission: before,
+        devicesAfterPermission: after,
+        trackSettings,
+        constraints,
+        levels: {
+          sampleCount,
+          rmsApprox: sampleCount ? sumLevel / sampleCount : 0,
+          peakApprox: peakLevel,
+          nonSilentLikely: (sampleCount ? sumLevel / sampleCount : 0) > 0.003 || peakLevel > 0.03,
+        },
+      });
+    } catch (error) {
+      const detail = voiceErrorPayload(error, 'mediadevices_capture_failed');
+      return ipcRenderer.invoke('tarx:voice-mediadevices-product-capture', {
+        ok: false,
+        firstBlocker: detail.name === 'NotAllowedError' ? 'permission_needed' : 'device_lost',
+        errorDetail: detail,
+        selectedDevice: selected,
+        devicesBeforePermission: before,
+        devicesAfterPermission: after,
+      });
+    } finally {
+      if (meterTimer) clearInterval(meterTimer);
+      if (meterContext) meterContext.close().catch(() => {});
+      if (recorderInstance && recorderInstance.state !== 'inactive') {
+        try { recorderInstance.stop(); } catch {}
+      }
+      stopTracks(captureStream);
+      activeSource = null;
+      emit(statusHandlers, { state: 'idle', listening: false, inputLevel: 0, source: 'electron_mediadevices' });
+    }
   }
 
   function startLevelMeter(mediaStream) {
@@ -171,8 +368,22 @@ function createTarxVoiceBridge() {
     states: TARX_VOICE_UX_STATES,
     getRuntimeCapabilities: async () => ipcRenderer.invoke('tarx:voice-runtime-capabilities'),
     getPrimeEvidence: async () => ipcRenderer.invoke('tarx:voice-prime-evidence'),
-    testMicrophone: async (payload) => ipcRenderer.invoke('tarx:voice-test-microphone', payload || {}),
-    askManualInternal: async (payload) => ipcRenderer.invoke('tarx:voice-manual-internal-ask', payload || {}),
+    testMicrophone: async (payload = {}) => {
+      const capabilities = await ipcRenderer.invoke('tarx:voice-runtime-capabilities').catch(() => null);
+      if (capabilities?.featureFlags?.TARX_VOICE_CAPTURE_DRIVER === 'mediadevices' && capabilities?.featureFlags?.TARX_VOICE_MEDIADEVICES_INTERNAL) {
+        return captureManualTurn(payload);
+      }
+      return ipcRenderer.invoke('tarx:voice-test-microphone', payload || {});
+    },
+    captureManualTurn,
+    askManualInternal: async (payload = {}) => {
+      const capabilities = await ipcRenderer.invoke('tarx:voice-runtime-capabilities').catch(() => null);
+      if (capabilities?.featureFlags?.TARX_VOICE_CAPTURE_DRIVER === 'mediadevices' && capabilities?.featureFlags?.TARX_VOICE_MEDIADEVICES_INTERNAL) {
+        const mediaDevicesResult = await captureManualTurn(payload);
+        return ipcRenderer.invoke('tarx:voice-manual-internal-ask', { ...payload, mediaDevicesResult });
+      }
+      return ipcRenderer.invoke('tarx:voice-manual-internal-ask', payload || {});
+    },
     runPipecatSpike: async () => ipcRenderer.invoke('tarx:voice-pipecat-spike-run'),
     startNativeCapture: async (payload) => ipcRenderer.invoke('tarx:voice-native-capture-start', payload || {}),
     stopNativeCapture: async () => ipcRenderer.invoke('tarx:voice-native-capture-stop'),
@@ -182,8 +393,10 @@ function createTarxVoiceBridge() {
     openInputSettings: async () => ipcRenderer.invoke('tarx:voice-open-input-settings'),
     openBluetoothSettings: async () => ipcRenderer.invoke('tarx:voice-open-bluetooth-settings'),
     openMicrophonePrivacySettings: async () => ipcRenderer.invoke('tarx:voice-open-microphone-privacy-settings'),
-    listInputDevices: async () => {
-      return listMediaDevicesInputs();
+    refreshInputDevices: async (options = {}) => listMediaDevicesInputs({ ...options, requestPermission: true }),
+    listInputDevices: async (options = {}) => {
+      installDeviceChangeListener();
+      return listMediaDevicesInputs(options);
     },
     runMediaDevicesSpike: async ({ durationMs = 1800, deviceId = '' } = {}) => {
       const capabilities = await ipcRenderer.invoke('tarx:voice-runtime-capabilities').catch(() => null);
@@ -209,7 +422,7 @@ function createTarxVoiceBridge() {
       let sumLevel = 0;
       let peakLevel = 0;
       try {
-        const audio = deviceId ? { deviceId: { exact: deviceId } } : true;
+        const audio = deviceId ? { ...TARX_MEDIADEVICES_AUDIO_CONSTRAINTS, deviceId: { exact: deviceId } } : TARX_MEDIADEVICES_AUDIO_CONSTRAINTS;
         spikeStream = await navigator.mediaDevices.getUserMedia({ audio });
         const after = await listMediaDevicesInputs().catch(() => before);
         const track = spikeStream.getAudioTracks()[0] || null;

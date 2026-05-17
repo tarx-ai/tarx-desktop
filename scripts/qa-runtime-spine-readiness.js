@@ -28,6 +28,8 @@ const evidence = {
   voiceNativeStt: readJson('/Users/master/.tarx/runs/voice-native-stt/latest.json'),
   voicePrimeReadiness: readJson('/Users/master/.tarx/runs/voice-prime-readiness/latest.json'),
   voiceTtsPlayback: readJson('/Users/master/.tarx/runs/voice-tts-playback/latest.json'),
+  voiceMediaDevicesProductCapture: readJson('/Users/master/.tarx/runs/voice-mediadevices-product-capture/latest.json'),
+  voiceDeviceReadiness: readJson('/Users/master/.tarx/runs/voice-device-readiness/latest.json'),
   voiceMediaDevicesSpike: readJson('/Users/master/.tarx/runs/voice-mediadevices-spike/latest.json'),
   voicePipecatSpike: readJson('/Users/master/.tarx/runs/voice-pipecat-spike/latest.json'),
   visionFreshness: readJson('/Users/master/.tarx/runs/vision-freshness/latest.json'),
@@ -51,6 +53,10 @@ const pipecatBlockedHonestly = evidence.voicePipecatSpike.ok
   && pipecat.guardrails?.supercomputerUsed === false;
 const mediaDevicesWired = evidence.voiceMediaDevicesSpike.ok
   && evidence.voiceMediaDevicesSpike.json?.status === 'voice_mediadevices_spike_wired';
+const mediaDevicesProductHardened = evidence.voiceMediaDevicesProductCapture.ok
+  && ['voice_mediadevices_product_capture_green', 'voice_mediadevices_product_capture_static_green'].includes(evidence.voiceMediaDevicesProductCapture.json?.status)
+  && evidence.voiceDeviceReadiness.ok
+  && ['voice_device_readiness_green', 'voice_device_manager_green'].includes(evidence.voiceDeviceReadiness.json?.status);
 const visionProposalReady = evidence.visionFreshness.ok
   && vision.status === 'vision_freshness_yellow'
   && vision.ok === true
@@ -70,7 +76,11 @@ record(checks, 'manual_voice_internal_loop_green', manualVoiceGreen, { file: evi
 record(checks, 'manual_voice_route_truth_computer', manualLoop.routeTruth?.computer === true && manualLoop.routeTruth?.supercomputerUsed === false && manualLoop.routeTruth?.browserFallbackUsed === false, manualLoop.routeTruth || null);
 record(checks, 'strict_wake_word_not_required_for_manual_mode', manualVoiceGreen && !strictWakeWordGreen, { strictNativeSttStatus: nativeStt.status || null }, 'watch');
 record(checks, 'wake_word_voice_blocked_until_strict_stt_green', !strictWakeWordGreen, { strictWakeWordGreen, status: nativeStt.status || null }, 'watch');
-record(checks, 'media_devices_product_path_wired_draft', mediaDevicesWired, { file: evidence.voiceMediaDevicesSpike.file, status: evidence.voiceMediaDevicesSpike.json?.status || null }, 'watch');
+record(checks, 'media_devices_product_path_hardened_internal', mediaDevicesProductHardened, {
+  productCapture: { file: evidence.voiceMediaDevicesProductCapture.file, status: evidence.voiceMediaDevicesProductCapture.json?.status || null },
+  deviceReadiness: { file: evidence.voiceDeviceReadiness.file, status: evidence.voiceDeviceReadiness.json?.status || null },
+  spike: { file: evidence.voiceMediaDevicesSpike.file, status: evidence.voiceMediaDevicesSpike.json?.status || null },
+}, mediaDevicesWired ? 'watch' : 'blocker');
 record(checks, 'pipecat_scaffold_blocked_until_dependency_adapters', pipecatBlockedHonestly, { file: evidence.voicePipecatSpike.file, status: pipecat.status || null, firstBlocker: pipecat.firstBlocker || null }, 'watch');
 record(checks, 'tts_playback_green', evidence.voiceTtsPlayback.ok && evidence.voiceTtsPlayback.json?.status === 'voice_tts_playback_green', { file: evidence.voiceTtsPlayback.file, status: evidence.voiceTtsPlayback.json?.status || null });
 record(checks, 'vision_yellow_acceptable_for_proposals', visionProposalReady, { file: evidence.visionFreshness.file, status: vision.status || null, firstBlocker: vision.firstBlocker || null });
@@ -121,7 +131,7 @@ const result = {
   current: {
     manualVoiceInternal: manualVoiceGreen ? 'GREEN' : 'BLOCKED',
     wakeWordVoice: strictWakeWordGreen ? 'GREEN' : 'BLOCKED',
-    mediaDevicesProductPath: mediaDevicesWired ? 'WIRED_DRAFT' : 'MISSING',
+    mediaDevicesProductPath: mediaDevicesProductHardened ? 'HARDENED_INTERNAL' : (mediaDevicesWired ? 'WIRED_DRAFT' : 'MISSING'),
     pipecatOrchestration: pipecat.status || 'missing',
     visionFreshness: vision.status || 'missing',
     computerUse: actionProposalSafe ? 'PROPOSAL_ONLY_GREEN' : 'BLOCKED',

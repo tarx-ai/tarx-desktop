@@ -18,7 +18,8 @@ record('browser_fallback.flag_declared', main.includes('TARX_VOICE_BROWSER_FALLB
 record('native_capture.disabled_by_default', main.includes("process.env.TARX_VOICE_NATIVE_CAPTURE === '1'"), 'native requires opt-in');
 record('browser_fallback.explicit_opt_in', main.includes("process.env.TARX_VOICE_BROWSER_FALLBACK === '1'"), 'fallback explicit/off by default');
 record('native_capture.source_label_electron_native', main.includes("source: 'electron_native'") && preload.includes("source: 'electron_native'"), 'electron_native source');
-record('browser_fallback.source_label_browser_fallback', main.includes("source = payload.source === 'electron_native' ? 'electron_native' : 'browser_fallback'") && preload.includes("source: 'browser_fallback'"), 'browser_fallback source');
+record('browser_fallback.source_label_browser_fallback', main.includes("'browser_fallback'") && preload.includes("source: 'browser_fallback'"), 'browser_fallback source');
+record('mediadevices.source_label_electron_mediadevices', main.includes("'electron_mediadevices'") && preload.includes('electron_mediadevices'), 'electron_mediadevices product source');
 record('native_capture.bridge_event_endpoint', main.includes("'/v1/runtime/voice/capture-events'"), 'Bridge voice capture endpoint');
 record('native_capture.no_silent_supercomputer', main.includes('supercomputerAllowed: false') && main.includes('supercomputerUsed: false') && main.includes('supercomputer_used: false'), 'supercomputer defaults off');
 record('native_capture.real_byte_adapter_declared', main.includes("adapter: 'ffmpeg-avfoundation'") && main.includes("'-f', 'avfoundation'"), 'ffmpeg AVFoundation adapter');

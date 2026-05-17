@@ -1,5 +1,11 @@
 # Release Notes
 
+## 2026-05-17 - Voice Device Hardening
+
+- Moves internal Manual Voice product capture to Electron MediaDevices with AVFoundation retained as QA fallback.
+- Adds MediaDevices device readiness, product-capture, and device-drift QA so the product path no longer depends on AVFoundation index/name selection or forced `:0`.
+- Keeps production voice, browser fallback, wake-word mode, Supercomputer, Computer Use execution, and model bundling disabled.
+
 ## 2026-05-17 - Electron Black Screen Recovery Hardening
 
 - Records the Skynet `Refresh TARX` black-screen incident as recovered manually with root cause unknown.
