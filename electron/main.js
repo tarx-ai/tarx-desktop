@@ -28,6 +28,7 @@ function packagedTarxDesktopUrl() {
 const PRIMARY_URL = process.env.TARX_DESKTOP_URL || process.env.TARX_VOICE_BETA_DESKTOP_URL || packagedTarxDesktopUrl() || 'https://tarx.com';
 const FALLBACK_PORTS = [11440, 11441];
 const FALLBACK_URL = 'http://localhost:11440'; // Updated dynamically
+const PRODUCTION_APP_ORIGINS = new Set(['https://tarx.com', 'https://www.tarx.com']);
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 const RUNTIME_HEALTH_URL = 'http://127.0.0.1:11440/health';
 const RUNTIME_START_TIMEOUT_MS = 12_000;
@@ -109,6 +110,70 @@ let previousRouteBeforeRefresh = null;
 let lastRefreshState = null;
 let firstRendererError = null;
 let safeShellVisible = false;
+let lastAllowedAppUrl = 'https://tarx.com/home';
+
+function parseUrl(value) {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function isLocalAppOrigin(parsed) {
+  if (!parsed) return false;
+  if (!isDev && currentUrl !== FALLBACK_URL) return false;
+  return parsed.protocol === 'http:' && ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname);
+}
+
+function isAllowedAppUrl(url) {
+  const parsed = parseUrl(url);
+  if (!parsed) return false;
+  if (PRODUCTION_APP_ORIGINS.has(parsed.origin)) return true;
+  return isLocalAppOrigin(parsed);
+}
+
+function isInternalShellUrl(url) {
+  return typeof url === 'string' && (
+    url.startsWith('data:text/html') ||
+    url.startsWith('file://') ||
+    url === 'about:blank'
+  );
+}
+
+function isHandledDeepLinkUrl(url) {
+  return typeof url === 'string' && url.startsWith('tarx://auth/callback');
+}
+
+function rememberAllowedAppUrl(url) {
+  if (!isAllowedAppUrl(url)) return;
+  lastAllowedAppUrl = url;
+}
+
+function safeAppFallbackUrl() {
+  return isAllowedAppUrl(lastAllowedAppUrl) ? lastAllowedAppUrl : 'https://tarx.com/home';
+}
+
+function openExternalUrl(url, source = 'external') {
+  if (!url || isInternalShellUrl(url) || isHandledDeepLinkUrl(url)) return;
+  shell.openExternal(url).catch((error) => {
+    console.log(`[tarx] Failed to open ${source} externally: ${error.message}`);
+  });
+}
+
+function shouldKeepInAppWindow(url) {
+  return isAllowedAppUrl(url) || isInternalShellUrl(url) || isHandledDeepLinkUrl(url);
+}
+
+function keepAppOnAllowedRoute(reason = 'external_navigation_blocked') {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const visibleUrl = currentWebContentsUrl();
+  if (shouldKeepInAppWindow(visibleUrl)) {
+    rememberAllowedAppUrl(visibleUrl);
+    return;
+  }
+  loadRouteWithRecovery(safeAppFallbackUrl(), reason);
+}
 
 function syncWindowButtonVisibility() {
   if (process.platform !== 'darwin' || !mainWindow || typeof mainWindow.setWindowButtonVisibility !== 'function') return;
@@ -331,6 +396,7 @@ function showSafeShell(reason, extra = {}) {
 function loadRouteWithRecovery(url, reason) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   safeShellVisible = false;
+  rememberAllowedAppUrl(url);
   recordRouteAttempt(url, reason);
   armRendererReadyTimer(reason, url);
   mainWindow.loadURL(url).catch((error) => {
@@ -2911,7 +2977,7 @@ function createWindow() {
   mainWindow.webContents.session.setPermissionRequestHandler(
     (webContents, permission, callback) => {
       const url = webContents.getURL();
-      const isTarx = url.includes('tarx.com') || url.includes('localhost') || url.startsWith('file://');
+      const isTarx = isAllowedAppUrl(url) || isInternalShellUrl(url);
       if ((permission === 'media' || permission === 'microphone') && isTarx) {
         callback(true);
       } else {
@@ -2920,8 +2986,9 @@ function createWindow() {
     }
   );
   mainWindow.webContents.session.setPermissionCheckHandler(
-    (webContents, permission) => {
-      if (permission === 'media' || permission === 'microphone') return true;
+    (webContents, permission, requestingOrigin) => {
+      const url = requestingOrigin || webContents.getURL();
+      if ((permission === 'media' || permission === 'microphone') && (isAllowedAppUrl(url) || isInternalShellUrl(url))) return true;
       return false;
     }
   );
@@ -2958,12 +3025,42 @@ function createWindow() {
     }
   });
 
-  // Handle external links — open in system browser
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://tarx.com') || url.startsWith('http://localhost')) {
-      return { action: 'allow' };
+  mainWindow.webContents.on('did-navigate', (_event, url) => {
+    rememberAllowedAppUrl(url);
+  });
+
+  mainWindow.webContents.on('did-navigate-in-page', (_event, url) => {
+    rememberAllowedAppUrl(url);
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (shouldKeepInAppWindow(url)) {
+      rememberAllowedAppUrl(url);
+      return;
     }
-    shell.openExternal(url);
+    event.preventDefault();
+    openExternalUrl(url, 'will-navigate');
+    keepAppOnAllowedRoute('external_will_navigate_blocked');
+  });
+
+  mainWindow.webContents.on('will-redirect', (event, url, isInPlace, isMainFrame) => {
+    if (isMainFrame === false || shouldKeepInAppWindow(url)) {
+      rememberAllowedAppUrl(url);
+      return;
+    }
+    event.preventDefault();
+    openExternalUrl(url, 'will-redirect');
+    keepAppOnAllowedRoute('external_redirect_blocked');
+  });
+
+  // Handle external links — open non-app origins in the system browser.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedAppUrl(url)) {
+      rememberAllowedAppUrl(url);
+      loadRouteWithRecovery(url, 'app_new_window_same_shell');
+      return { action: 'deny' };
+    }
+    openExternalUrl(url, 'new-window');
     return { action: 'deny' };
   });
 
