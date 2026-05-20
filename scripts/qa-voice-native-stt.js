@@ -17,6 +17,7 @@ const outDir = '/Users/master/.tarx/runs/voice-native-stt';
 fs.mkdirSync(outDir, { recursive: true });
 const requiredSpokenPhrase = 'TARS, what are we working on today?';
 const writtenDisplayPhrase = 'TARX, what are we working on today?';
+const promptedCaptureEnabled = process.env.TARX_VOICE_PROMPTED_CAPTURE === '1';
 const calibrationEvidencePath = '/Users/master/.tarx/runs/voice-live-calibration/latest.json';
 const micProfilePath = '/Users/master/.tarx/runs/voice-live-calibration/prime-mic-profile.json';
 
@@ -135,10 +136,34 @@ function nativeDeviceInventory() {
   };
 }
 
+function capturePrompt(selectedDevice = null) {
+  return {
+    enabled: promptedCaptureEnabled,
+    spokenPhrase: requiredSpokenPhrase,
+    displayPhrase: writtenDisplayPhrase,
+    prompt: `Speak now: ${requiredSpokenPhrase}`,
+    selectedDevice,
+    countdownSeconds: promptedCaptureEnabled ? 3 : 0,
+    operatorHint: 'For a green beta proof, speak the phrase after the countdown and keep speakers/background audio quiet.',
+  };
+}
+
+function runPromptedCaptureCountdown(prompt) {
+  if (!promptedCaptureEnabled) return;
+  process.stderr.write(`\n[TARX voice proof] ${prompt.prompt}\n`);
+  for (let remaining = prompt.countdownSeconds; remaining > 0; remaining -= 1) {
+    process.stderr.write(`[TARX voice proof] recording in ${remaining}...\n`);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+  }
+  process.stderr.write('\u0007[TARX voice proof] recording now.\n');
+}
+
 function captureFreshNativeWav() {
   const inventory = nativeDeviceInventory();
   if (inventory.requestedDevice && !inventory.selected) return { ok: false, firstBlocker: 'requested_avfoundation_input_not_found', inventory };
   if (!inventory.selected) return { ok: false, firstBlocker: 'no_avfoundation_input_device', inventory };
+  const prompt = capturePrompt(inventory.selected);
+  runPromptedCaptureCountdown(prompt);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const file = path.join(captureDir, `native-tars-fresh-${stamp}.wav`);
   const seconds = Number(process.env.TARX_NATIVE_CAPTURE_SECONDS || 7);
@@ -161,6 +186,7 @@ function captureFreshNativeWav() {
     wavPath: file,
     audioStats,
     inventory,
+    prompt,
     captureExit: { status: capture.status, signal: capture.signal, error: capture.error?.message || null, stderr: String(capture.stderr || '').slice(0, 1200) },
   };
 }
@@ -290,6 +316,47 @@ function meaningfulTranscript(text) {
   return /\b(tars|tarx)\b/.test(normalized) && /what.*working.*today|working.*on.*today/.test(normalized);
 }
 
+function musicOrBackgroundTranscript(text) {
+  return /\b(music|upbeat music|background music|instrumental)\b/i.test(String(text || ''));
+}
+
+function semanticSttForTranscript(text, semanticSpeechGreen) {
+  const normalized = String(text || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (semanticSpeechGreen) {
+    return {
+      intent: 'ask_current_work_context',
+      summary: 'The user is asking what TARX is working on today.',
+      confidence: 0.86,
+      actionability: 'read_only',
+      entities: ['TARX', 'current work'],
+      normalized_text: normalized,
+    };
+  }
+  return {
+    intent: normalized ? 'untrusted_transcript_requires_review' : '',
+    summary: normalized ? 'Whisper returned speech, but it did not semantically match the required proof phrase.' : '',
+    confidence: normalized ? 0.35 : 0,
+    actionability: 'none',
+    entities: [],
+    normalized_text: normalized,
+  };
+}
+
+function selectedDeviceMismatch(calibration, selectedDevice) {
+  const calibrated = String(calibration?.selectedDevice?.name || '').trim().toLowerCase();
+  const selected = String(selectedDevice?.name || '').trim().toLowerCase();
+  return Boolean(calibrated && selected && calibrated !== selected);
+}
+
+function semanticBlocker({ stt, routeGreen, semanticSpeechGreen, calibration, selectedDevice }) {
+  if (semanticSpeechGreen) return null;
+  if (!routeGreen && !stt.ok) return 'native_wav_to_whisper_failed';
+  if (stt.blankAudio) return 'whisper_blank_audio';
+  if (musicOrBackgroundTranscript(stt.transcript)) return 'input_source_wrong_or_environment_audio';
+  if (selectedDeviceMismatch(calibration, selectedDevice)) return 'calibrated_mic_unavailable_or_device_drift';
+  return 'transcript_wrong';
+}
+
 function displayTranscript(text) {
   return String(text || '').replace(/\bTARS\b/gi, 'TARX');
 }
@@ -328,6 +395,7 @@ function wavPlaybackEvidence(file, selectedDevice = null, transcript = '', seman
 
 function humanListenClassification(file, selectedDevice = null, transcript = '', semanticSpeechGreen = false, audioStats = null) {
   const humanListenRequired = !semanticSpeechGreen;
+  const backgroundLikely = musicOrBackgroundTranscript(transcript);
   return {
     human_listen_required: humanListenRequired,
     wavPath: file || null,
@@ -337,6 +405,7 @@ function humanListenClassification(file, selectedDevice = null, transcript = '',
     human_heard_phrase: null,
     human_heard_background_audio: null,
     human_heard_required_phrase: null,
+    background_audio_likely: backgroundLikely,
     decisionOptions: {
       whisper_semantic_failure: 'Use when the WAV clearly contains the required TARS phrase but Whisper does not return it.',
       input_source_wrong_or_environment_audio: 'Use when the WAV contains TV, speakers, room voices, or unrelated speech instead of the required phrase.',
@@ -346,7 +415,9 @@ function humanListenClassification(file, selectedDevice = null, transcript = '',
       ? 'native_voice_stt_green'
       : audioStats?.nonSilent === false
         ? 'mic_quality_issue'
-        : 'human_listen_required',
+        : backgroundLikely
+          ? 'input_source_wrong_or_environment_audio'
+          : 'human_listen_required',
   };
 }
 
@@ -376,6 +447,11 @@ function validateSttResult(sttResult, captureEvent) {
   if (!sttResult.text) errors.push('text_required');
   if (sttResult.evidence?.raw_audio_logged !== false) errors.push('raw_audio_logging_must_be_false');
   if (sttResult.route?.supercomputer_used !== false) errors.push('supercomputer_must_remain_false');
+  if (!sttResult.semantic?.intent) errors.push('semantic_intent_required');
+  if (!sttResult.semantic?.summary) errors.push('semantic_summary_required');
+  if (Number(sttResult.semantic?.confidence) < 0.6) errors.push('semantic_confidence_below_beta_floor');
+  if (!sttResult.production_proof || sttResult.production_proof.semantic_match !== true) errors.push('production_proof_requires_semantic_match');
+  if (sttResult.production_proof?.raw_audio_logged !== false) errors.push('production_proof_must_not_log_raw_audio');
   return { ok: errors.length === 0, errors };
 }
 
@@ -402,6 +478,7 @@ async function main() {
       firstBlocker: freshCapture.firstBlocker || 'native_capture_failed',
       requiredSpokenPhrase,
       writtenDisplayPhrase,
+      capturePrompt: capturePrompt(freshCapture?.inventory?.selected || null),
       freshCapture,
       privacy: {
         supercomputerUsed: false,
@@ -435,6 +512,7 @@ async function main() {
       firstBlocker: audioStats.validWav ? 'capture_silent' : 'wav_format_invalid',
       requiredSpokenPhrase,
       writtenDisplayPhrase,
+      capturePrompt: capturePrompt(selectedDevice),
       wavPath,
       playback: wavPlaybackEvidence(wavPath, selectedDevice, '', false),
       humanListen: humanListenClassification(wavPath, selectedDevice, '', false, audioStats),
@@ -479,6 +557,7 @@ async function main() {
       raw_audio_logged: false,
       audio_stats: audioStats,
       selected_device: selectedDevice,
+      capture_prompt: capturePrompt(selectedDevice),
     },
   };
   const bridgeCapture = await postBridge('/v1/runtime/voice/capture-events', captureEvent);
@@ -489,6 +568,8 @@ async function main() {
       ? await transcribeWithWhisper(wav, endpoint)
     : { ok: false, status: 0, transcript: '', transcriptPreview: '', blankAudio: false, raw: null, firstBlocker: 'local_whisper_route_not_found' };
 
+  const transcriptMeaningful = meaningfulTranscript(stt.transcript);
+  const semantic = semanticSttForTranscript(stt.transcript, transcriptMeaningful);
   const sttResult = {
     schema: 'tarx-stt-result.v1',
     session_id: captureEvent.session_id,
@@ -510,13 +591,20 @@ async function main() {
       endpoint,
       route_role: whisper?.role || null,
     },
+    semantic,
+    production_proof: {
+      capture_source: captureEvent.source,
+      semantic_match: transcriptMeaningful,
+      raw_audio_logged: false,
+      evidence_ref: '/Users/master/.tarx/runs/voice-native-stt/latest.json',
+    },
   };
   const validation = validateSttResult(sttResult, captureEvent);
-  const bridgeStt = validation.ok ? await postBridge('/v1/runtime/stt-results', sttResult) : null;
-  const transcriptMeaningful = meaningfulTranscript(stt.transcript);
+  const bridgeStt = await postBridge('/v1/runtime/stt-results', sttResult);
   const calibration = calibrationContext();
   const semanticSpeechGreen = validation.ok && stt.ok && !stt.blankAudio && transcriptMeaningful;
-  const routeGreen = validation.ok && stt.ok;
+  const routeGreen = stt.ok && sttResult.local_only === true && sttResult.route.supercomputer_used === false && Boolean(endpoint);
+  const firstBlocker = semanticBlocker({ stt, routeGreen, semanticSpeechGreen, calibration, selectedDevice });
   const playback = wavPlaybackEvidence(
     wavPath,
     selectedDevice,
@@ -537,10 +625,11 @@ async function main() {
     ok: semanticSpeechGreen,
     routeGreen,
     semanticSpeechGreen,
-    classification: semanticSpeechGreen ? 'green' : (routeGreen ? 'harness_red' : 'environment_red'),
-    firstBlocker: semanticSpeechGreen ? null : (routeGreen ? (stt.blankAudio ? 'whisper_blank_audio' : 'transcript_wrong') : 'native_wav_to_whisper_failed'),
+    classification: semanticSpeechGreen ? 'green' : (routeGreen ? 'semantic_red' : 'environment_red'),
+    firstBlocker,
     requiredSpokenPhrase,
     writtenDisplayPhrase,
+    capturePrompt: capturePrompt(selectedDevice),
     rawTranscript: stt.transcript,
     normalizedDisplayTranscript: displayTranscript(stt.transcript),
     audioStats,
@@ -556,6 +645,11 @@ async function main() {
     })),
     selectedEndpoint: endpoint,
     calibration,
+    deviceDrift: {
+      calibratedDevice: calibration?.selectedDevice || null,
+      selectedDevice,
+      mismatch: selectedDeviceMismatch(calibration, selectedDevice),
+    },
     captureEvent,
     freshCapture,
     sttResult,
@@ -575,7 +669,7 @@ async function main() {
 
   fs.writeFileSync(path.join(outDir, 'latest.json'), `${JSON.stringify(result, null, 2)}\n`);
   console.log(JSON.stringify(result, null, 2));
-  process.exit(routeGreen ? 0 : 1);
+  process.exit(semanticSpeechGreen ? 0 : 1);
 }
 
 main().catch((error) => {

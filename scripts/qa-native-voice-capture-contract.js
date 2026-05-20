@@ -12,6 +12,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 const pkg = JSON.parse(read('package.json'));
 const main = read('electron/main.js');
 const preload = read('electron/preload.js');
+const nativeStt = read('scripts/qa-voice-native-stt.js');
 
 record('native_capture.flag_declared', main.includes('TARX_VOICE_NATIVE_CAPTURE'), 'main flag');
 record('browser_fallback.flag_declared', main.includes('TARX_VOICE_BROWSER_FALLBACK'), 'main flag');
@@ -34,6 +35,8 @@ record('native_capture.preload_stop_routes_native', preload.includes("activeSour
 record('native_capture.whisper_endpoint_uses_11447', main.includes("http://127.0.0.1:11447") && main.includes('/inference'), 'whisper.cpp /inference route');
 record('native_capture.stt_result_emits_bridge_contract', main.includes('/v1/runtime/stt-results') && main.includes("schema: 'tarx-stt-result.v1'"), 'Bridge STT result contract');
 record('native_capture.stt_uses_file_reference_not_raw_audio_telemetry', main.includes('transcribeNativeCaptureFile') && main.includes('raw_audio_logged: false'), 'STT file ref');
+record('native_capture.prompted_operator_proof_available', nativeStt.includes('TARX_VOICE_PROMPTED_CAPTURE') && nativeStt.includes('Speak now:') && nativeStt.includes('capture_prompt'), 'operator prompted capture proof');
+record('native_capture.semantic_music_blocker_visible', nativeStt.includes('input_source_wrong_or_environment_audio') && nativeStt.includes('musicOrBackgroundTranscript'), 'background/music blocker');
 record('voice_states.off', main.includes("'Voice off'") && preload.includes("'Voice off'"), 'Voice off');
 record('voice_states.permission_needed', main.includes('Allow microphone access to talk to TARX.') && preload.includes('Allow microphone access to talk to TARX.'), 'permission copy');
 record('voice_states.listening', main.includes('TARX is listening') && preload.includes('TARX is listening'), 'listening copy');

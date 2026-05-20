@@ -3,9 +3,14 @@
 
 const fs = require('fs');
 const http = require('http');
+const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
-const outDir = '/Users/master/.tarx/runs/voice-prime-readiness';
+const electronRepo = process.cwd();
+const outDir = path.join(os.homedir(), '.tarx', 'runs', 'voice-prime-readiness');
+const runRoot = path.join(os.homedir(), '.tarx', 'runs');
+const tarxOpsRepo = process.env.TARX_OPS_REPO || path.resolve(electronRepo, '..', 'tarx-ops');
 fs.mkdirSync(outDir, { recursive: true });
 
 function readJson(file) {
@@ -55,12 +60,55 @@ function record(checks, name, pass, detail = null) {
   checks.push({ name, pass: Boolean(pass), detail });
 }
 
+function inspectBridgeListeners() {
+  try {
+    const stdout = execFileSync('lsof', ['-nP', '-iTCP:11440', '-sTCP:LISTEN'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 2000,
+    });
+    const listeners = stdout
+      .split(/\r?\n/)
+      .slice(1)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const parts = line.split(/\s+/);
+        const name = parts.slice(8).join(' ');
+        return {
+          command: parts[0] || null,
+          pid: Number(parts[1]) || null,
+          user: parts[2] || null,
+          name,
+          localhostOnly: /TCP 127\.0\.0\.1:11440 \(LISTEN\)/.test(line),
+          wildcard: /TCP \*:11440 \(LISTEN\)/.test(line),
+        };
+      });
+    const localhostOnly = listeners.filter((listener) => listener.localhostOnly);
+    const wildcard = listeners.filter((listener) => listener.wildcard);
+    const shadowingLikely = listeners.length > 1 && localhostOnly.length > 0 && wildcard.length > 0;
+    return {
+      ok: listeners.length <= 1 || !shadowingLikely,
+      status: shadowingLikely ? 'stale_bridge_listener_shadowing_runtime_contracts' : 'bridge_listener_hygiene_ok',
+      listeners,
+      shadowingLikely,
+      safeFix: shadowingLikely && localhostOnly[0]?.pid ? `kill ${localhostOnly[0].pid} && launchctl kickstart -k gui/$(id -u)/com.tarx.bridge` : null,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'bridge_listener_inspection_failed',
+      error: error.message,
+    };
+  }
+}
+
 (async () => {
-  const inventory = readJson('/Users/master/.tarx/runs/voice-input-inventory/latest.json');
-  const doctor = readJson('/Users/master/.tarx/runs/voice-input-doctor/latest.json');
-  const sttEvidence = readJson('/Users/master/.tarx/runs/voice-native-stt/latest.json');
-  const ttsEvidence = readJson('/Users/master/.tarx/runs/voice-tts-playback/latest.json');
-  const controlPlane = readJson('/Users/master/.tarx/runs/local-operator-control-plane/latest.json');
+  const inventory = readJson(path.join(runRoot, 'voice-input-inventory', 'latest.json'));
+  const doctor = readJson(path.join(runRoot, 'voice-input-doctor', 'latest.json'));
+  const sttEvidence = readJson(path.join(runRoot, 'voice-native-stt', 'latest.json'));
+  const ttsEvidence = readJson(path.join(runRoot, 'voice-tts-playback', 'latest.json'));
+  const controlPlane = readJson(path.join(runRoot, 'local-operator-control-plane', 'latest.json'));
 
   const bridgeCaptureProbe = {
     schema: 'tarx-voice-capture-event.v1',
@@ -99,8 +147,22 @@ function record(checks, name, pass, detail = null) {
       endpoint: sttEvidence.json?.selectedEndpoint || 'http://127.0.0.1:11447/inference',
       route_role: 'whisper_cpp',
     },
+    semantic: sttEvidence.json?.sttResult?.semantic || {
+      intent: '',
+      summary: '',
+      confidence: 0,
+      actionability: 'none',
+      entities: [],
+    },
+    production_proof: sttEvidence.json?.sttResult?.production_proof || {
+      capture_source: 'electron_native',
+      semantic_match: false,
+      raw_audio_logged: false,
+      evidence_ref: sttEvidence.file,
+    },
   };
 
+  const bridgeListeners = inspectBridgeListeners();
   const bridgeHealth = await requestJson(11440, '/health');
   const bridgeCaptureEndpoint = await requestJson(11440, '/v1/runtime/voice/capture-events', {
     method: 'POST',
@@ -116,17 +178,29 @@ function record(checks, name, pass, detail = null) {
   const stt = sttEvidence.json || {};
   const checks = [];
   const sttGreen = sttEvidence.ok && stt.ok === true && stt.status === 'native_voice_stt_green' && stt.semanticSpeechGreen === true;
-  const sttRouteLocal = sttEvidence.ok && stt.routeGreen === true && stt.privacy?.supercomputerUsed === false && stt.sttResult?.local_only === true;
-  const semanticRedHonest = sttEvidence.ok && stt.status === 'native_voice_stt_route_green_semantic_speech_red' && stt.semanticSpeechGreen === false;
+  const sttRouteLocal = sttEvidence.ok
+    && stt.privacy?.supercomputerUsed === false
+    && stt.sttResult?.local_only === true
+    && stt.sttResult?.route?.supercomputer_used === false
+    && Boolean(stt.selectedEndpoint);
+  const semanticRedHonest = sttEvidence.ok
+    && sttRouteLocal
+    && stt.semanticSpeechGreen === false
+    && Array.isArray(stt.validation?.errors)
+    && stt.validation.errors.some((error) => /semantic|production_proof/i.test(String(error)));
   const onlyRazer = inventory.json?.avFoundationInputs?.length === 1 && /razer kiyo pro/i.test(String(inventory.json.avFoundationInputs[0].name || ''));
-  const bridgeContracts = bridgeCaptureEndpoint.ok && bridgeSttEndpoint.ok;
+  const bridgeSttSemanticGateWorking = sttGreen
+    ? bridgeSttEndpoint.ok
+    : !bridgeSttEndpoint.ok && Array.isArray(bridgeSttEndpoint.json?.errors)
+      && bridgeSttEndpoint.json.errors.some((error) => /semantic|production_proof/i.test(String(error)));
+  const bridgeContracts = bridgeCaptureEndpoint.ok && bridgeSttSemanticGateWorking;
   const ttsPlaybackGreen = ttsEvidence.ok && ttsEvidence.json?.ok === true && /green/i.test(String(ttsEvidence.json?.status || ''));
 
   record(checks, 'voice_cta_panel_hardening_green', true, 'Covered by qa:voice-panel-state-machine and qa:voice-evidence-panel.');
   record(checks, 'inventory_available', inventory.ok && inventory.json?.status === 'voice_input_inventory_green', { file: inventory.file, status: inventory.json?.status || null });
   record(checks, 'selected_mic_recorded', Boolean(stt.captureEvent?.evidence?.selected_device || inventory.json?.defaultInput), stt.captureEvent?.evidence?.selected_device || inventory.json?.defaultInput || null);
   record(checks, 'native_capture_non_silent_or_stt_green', sttGreen || stt.audioStats?.nonSilent === true, stt.audioStats || null);
-  record(checks, 'stt_route_local_only', sttGreen || sttRouteLocal || semanticRedHonest, {
+  record(checks, 'stt_route_local_only', sttGreen || sttRouteLocal, {
     status: stt.status || null,
     routeGreen: stt.routeGreen || false,
     selectedEndpoint: stt.selectedEndpoint || null,
@@ -142,13 +216,15 @@ function record(checks, name, pass, detail = null) {
     status: stt.status || null,
     transcript: stt.rawTranscript || null,
   });
+  record(checks, 'bridge_listener_hygiene', bridgeListeners.ok, bridgeListeners);
   record(checks, 'bridge_reachable', bridgeHealth.ok, bridgeHealth);
   record(checks, 'bridge_voice_contracts_present', bridgeContracts, {
     captureEndpoint: bridgeCaptureEndpoint,
     sttEndpoint: bridgeSttEndpoint,
+    semanticGateWorking: bridgeSttSemanticGateWorking,
     restartOrUpdateLikelyNeeded: !bridgeContracts,
     installedBridgeArtifact: '/Users/master/.tarx/servers/tarx-ops/dist/bridge.js',
-    sourceBridgeArtifact: '/Users/master/Desktop/TARX/Repos - active/tarx-ops/dist/bridge.js',
+    sourceBridgeArtifact: path.join(tarxOpsRepo, 'dist', 'bridge.js'),
     safeRestartCommand: 'launchctl kickstart -k gui/$(id -u)/com.tarx.bridge',
   });
   record(checks, 'whisper_service_reachable', whisperHealth.ok, whisperHealth);
@@ -181,6 +257,7 @@ function record(checks, name, pass, detail = null) {
       transcript: stt.rawTranscript || stt.normalizedDisplayTranscript || null,
       audioStats: stt.audioStats || null,
       bridgeContractsPresent: bridgeContracts,
+      bridgeListeners,
       ttsServiceRunning: ttsHealth.ok,
       ttsPlaybackGreen,
       danielApproved: false,
