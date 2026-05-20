@@ -2213,7 +2213,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 24, y: 24 },
+    trafficLightPosition: { x: 22, y: 18 },
     roundedCorners: true,
     backgroundColor: '#0A0A0D',
     hasShadow: true,
@@ -2244,7 +2244,7 @@ function createWindow() {
         content: '';
         position: fixed;
         top: 0; left: 0; right: 0;
-        height: 60px;
+        height: 56px;
         -webkit-app-region: drag;
         z-index: 99998;
         pointer-events: none;
