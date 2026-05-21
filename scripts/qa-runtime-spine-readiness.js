@@ -44,6 +44,8 @@ const pipecat = evidence.voicePipecatSpike.json || {};
 const vision = evidence.visionFreshness.json || {};
 const action = evidence.actionSafetyGate.json || {};
 const performance = evidence.runtimePerformance.json || {};
+const voiceReadiness = evidence.voicePrimeReadiness.json || {};
+const voiceOperatorAction = voiceReadiness.operatorAction || null;
 
 const manualVoiceGreen = evidence.voiceManualLoop.ok && manualLoop.status === 'voice_manual_loop_green' && manualLoop.ok === true;
 const strictWakeWordGreen = evidence.voiceNativeStt.ok && nativeStt.status === 'native_voice_stt_green' && nativeStt.semanticSpeechGreen === true;
@@ -123,6 +125,8 @@ const result = {
   status,
   classification: status === 'runtime_spine_ready_internal_manual' ? 'green' : (status === 'runtime_spine_degraded' ? 'degraded' : 'blocked'),
   firstBlocker,
+  nextAction: voiceOperatorAction?.label || (firstBlocker ? `Resolve ${firstBlocker}` : 'Ready for internal manual runtime spine review.'),
+  operatorActions: voiceOperatorAction ? [voiceOperatorAction] : [],
   recommendation: status === 'runtime_spine_ready_internal_manual'
     ? 'INTERNAL_MANUAL_RUNTIME_SPINE_READY'
     : (status === 'runtime_spine_degraded' ? 'MERGE_WITH_DEGRADED_RUNTIME_WATCH' : 'STILL_BLOCKED'),
