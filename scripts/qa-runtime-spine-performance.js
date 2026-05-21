@@ -3,12 +3,14 @@
 
 const fs = require('fs');
 const http = require('http');
+const os = require('os');
 const path = require('path');
 
-const outDir = '/Users/master/.tarx/runs/runtime-spine-performance';
+const electronRepo = process.cwd();
+const outDir = path.join(os.homedir(), '.tarx', 'runs', 'runtime-spine-performance');
 const outPath = path.join(outDir, 'latest.json');
-const tarxMcpRepo = '/Users/master/Desktop/TARX/Repos - active/tarx-mcp';
-const tarxOpsRepo = '/Users/master/Desktop/TARX/Repos - active/tarx-ops';
+const tarxMcpRepo = process.env.TARX_MCP_REPO || path.resolve(electronRepo, '..', 'tarx-mcp');
+const tarxOpsRepo = process.env.TARX_OPS_REPO || path.resolve(electronRepo, '..', 'tarx-ops');
 
 fs.mkdirSync(outDir, { recursive: true });
 
@@ -89,6 +91,8 @@ function requestJson({ name, port, pathname, method = 'GET', body = null, timeou
 function runtimeProbePayloads() {
   const sessionId = 'runtime_spine_perf';
   const captureId = `vc_spine_perf_${Date.now()}`;
+  const actionId = `act_spine_perf_${Date.now()}`;
+  const trainingSessionId = `train_spine_perf_${Date.now()}`;
   return {
     captureEvent: {
       schema: 'tarx-voice-capture-event.v1',
@@ -114,6 +118,8 @@ function runtimeProbePayloads() {
       evidence: { audio_ref: 'runtime-spine-performance-probe.wav', audio_bytes: 44, raw_audio_logged: false },
     },
     actionProposal: {
+      session_id: sessionId,
+      action_id: actionId,
       proposed_action: { type: 'click', target: 'runtime spine disabled probe', expected_result: 'proposal only' },
       grounding: {
         vision_observation_id: 'vis_spine_perf_probe',
@@ -124,13 +130,55 @@ function runtimeProbePayloads() {
       },
       risk: { external_side_effect: false },
     },
+    composerDraft: {
+      session_id: sessionId,
+      source: 'runtime_spine_performance_probe',
+      text: 'Explain this screen from pointer evidence only.',
+      pointer_context_id: `ptr_spine_perf_${Date.now()}`,
+    },
+    demoRun: {
+      session_id: sessionId,
+      workflow: 'operator_copilot_runtime_spine_probe',
+      status: 'created',
+      transcript: 'Runtime spine probe only; no demo execution occurred.',
+    },
+    actionConfirmBlocked: {
+      action_id: actionId,
+      confirmed: true,
+      target_freshness_ms: 999999,
+      injector_ready: false,
+    },
+    actionResultBlocked: {
+      session_id: sessionId,
+      action_id: actionId,
+      status: 'blocked',
+      evidence: { reason: 'runtime_spine_probe_no_injector_execution' },
+      error: 'proposal_only_probe',
+    },
+    trainingStart: {
+      session_id: trainingSessionId,
+      user_id: 'runtime_spine_probe',
+      mode: 'human_guided',
+    },
+    trainingCandidate: {
+      session_id: trainingSessionId,
+      category: 'workflow_step',
+      prompt: 'User points at a UI element and asks TARX to explain it.',
+      correction: 'Use pointer/OCR/AX evidence only.',
+      review_status: 'staged',
+      privacy_class: 'local_private',
+    },
+    trainingEnd: {
+      session_id: trainingSessionId,
+      payload: { reason: 'runtime_spine_probe_complete' },
+    },
   };
 }
 
 function inspectTarxMcp() {
   const pkgPath = path.join(tarxMcpRepo, 'package.json');
   const mcpConfigPath = path.join(tarxMcpRepo, '.mcp.json');
-  const canaryPath = '/tmp/tarx_mcp_operational_canary.json';
+  const canaryPath = process.env.TARX_MCP_CANARY_PATH || path.join(os.tmpdir(), 'tarx_mcp_operational_canary.json');
   const pkg = readJson(pkgPath);
   const mcpConfig = readJson(mcpConfigPath);
   const canary = readJson(canaryPath);
@@ -189,6 +237,15 @@ function inspectOpsContracts() {
   };
 }
 
+function probeHasSemanticSttGateRejection(probe) {
+  if (!probe || probe.name !== 'bridge.stt_result_contract' || probe.ok || probe.statusCode < 400) {
+    return false;
+  }
+  const errors = Array.isArray(probe.json?.errors) ? probe.json.errors : [];
+  const text = `${errors.join(' ')} ${probe.textPreview || ''}`.toLowerCase();
+  return text.includes('semantic') || text.includes('production_voice_semantic_proof');
+}
+
 (async () => {
   const payloads = runtimeProbePayloads();
   const probes = [
@@ -202,6 +259,15 @@ function inspectOpsContracts() {
     { name: 'bridge.voice_capture_contract', port: 11440, pathname: '/v1/runtime/voice/capture-events', method: 'POST', body: payloads.captureEvent, timeoutMs: 1500 },
     { name: 'bridge.stt_result_contract', port: 11440, pathname: '/v1/runtime/stt-results', method: 'POST', body: payloads.sttResult, timeoutMs: 1500 },
     { name: 'bridge.action_proposal_contract', port: 11440, pathname: '/v1/runtime/actions/propose', method: 'POST', body: payloads.actionProposal, timeoutMs: 1500 },
+    { name: 'operator.pointer_context', port: 11440, pathname: `/v1/pointer/context?session_id=${encodeURIComponent('runtime_spine_perf')}&x=10&y=20&active_app=runtime-spine-probe&target_label=Composer&target_confidence=0.8`, timeoutMs: 1500 },
+    { name: 'operator.composer_draft', port: 11440, pathname: '/v1/composer/draft', method: 'POST', body: payloads.composerDraft, timeoutMs: 1500 },
+    { name: 'operator.demo_run_packet', port: 11440, pathname: '/v1/demo/run', method: 'POST', body: payloads.demoRun, timeoutMs: 1500 },
+    { name: 'operator.action_propose', port: 11440, pathname: '/v1/action/propose', method: 'POST', body: payloads.actionProposal, timeoutMs: 1500 },
+    { name: 'operator.action_confirm_blocks_without_injector', port: 11440, pathname: '/v1/action/confirm', method: 'POST', body: payloads.actionConfirmBlocked, timeoutMs: 1500 },
+    { name: 'operator.action_result_blocked_record', port: 11440, pathname: '/v1/action/result', method: 'POST', body: payloads.actionResultBlocked, timeoutMs: 1500 },
+    { name: 'operator.training_session_start', port: 11440, pathname: '/v1/training/session/start', method: 'POST', body: payloads.trainingStart, timeoutMs: 1500 },
+    { name: 'operator.training_candidate_stage', port: 11440, pathname: '/v1/training/session/candidate', method: 'POST', body: payloads.trainingCandidate, timeoutMs: 1500 },
+    { name: 'operator.training_session_end', port: 11440, pathname: '/v1/training/session/end', method: 'POST', body: payloads.trainingEnd, timeoutMs: 1500 },
   ];
 
   const results = [];
@@ -209,8 +275,15 @@ function inspectOpsContracts() {
     results.push(await requestJson(probe));
   }
 
+  const semanticSttGateProbe = results.find(probeHasSemanticSttGateRejection) || null;
+  const voiceSemanticGateWorking = Boolean(semanticSttGateProbe);
   const timedOut = results.filter((probe) => probe.timedOut);
-  const degraded = results.filter((probe) => !probe.ok || probe.timedOut);
+  const degraded = results.filter((probe) => {
+    if (probe.name === 'bridge.stt_result_contract' && voiceSemanticGateWorking) {
+      return false;
+    }
+    return !probe.ok || probe.timedOut;
+  });
   const shallowHealthGreen = results
     .filter((probe) => probe.name.startsWith('tarx_core.') && probe.name.endsWith('_health'))
     .every((probe) => probe.ok);
@@ -232,6 +305,7 @@ function inspectOpsContracts() {
       degradedCount: degraded.length,
       timeoutCount: timedOut.length,
       healthGreenDoesNotImplyReadinessGreen: shallowHealthGreen && !readinessGreen,
+      voiceSemanticGateWorking,
     },
     probes: results,
     localInferenceTimeoutBehavior: {
@@ -243,6 +317,17 @@ function inspectOpsContracts() {
     },
     mcp,
     canonicalContracts: ops,
+    operatorCopilotContracts: {
+      pointerContextGreen: results.some((probe) => probe.name === 'operator.pointer_context' && probe.ok),
+      composerDraftGreen: results.some((probe) => probe.name === 'operator.composer_draft' && probe.ok && probe.json?.payload?.auto_submit === false),
+      demoRunPacketGreen: results.some((probe) => probe.name === 'operator.demo_run_packet' && probe.ok),
+      actionProposalGreen: results.some((probe) => probe.name === 'operator.action_propose' && probe.ok && probe.json?.execution_allowed === false),
+      actionConfirmBlockedWithoutInjector: results.some((probe) => probe.name === 'operator.action_confirm_blocks_without_injector' && probe.ok && probe.json?.payload?.execution_allowed === false),
+      actionResultRecordGreen: results.some((probe) => probe.name === 'operator.action_result_blocked_record' && probe.ok),
+      trainingSessionLifecycleGreen: ['operator.training_session_start', 'operator.training_candidate_stage', 'operator.training_session_end']
+        .every((name) => results.some((probe) => probe.name === name && probe.ok)),
+      routeTruth: 'Operator Copilot probes create local evidence/proposals only; no injector execution is enabled by this QA.',
+    },
     routeTruth: {
       computerDefault: true,
       supercomputerUsed: false,
@@ -251,6 +336,7 @@ function inspectOpsContracts() {
     },
     guardrails: {
       productionVoiceReady: false,
+      productionVoiceBlockedUntilSemanticSttProof: voiceSemanticGateWorking,
       wakeWordModeEnabled: false,
       alwaysOnListeningEnabled: false,
       browserFallbackEnabledByQa: false,
