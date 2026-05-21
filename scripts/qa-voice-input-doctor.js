@@ -85,6 +85,11 @@ const recentSilent = latestNativeStt
   : latest.some((entry) => entry.attempts?.some((attempt) => attempt.audioStats?.rms === 0 && attempt.audioStats?.peakAmplitude === 0));
 const latestSemanticRed = latestNativeStt?.status === 'native_voice_stt_route_green_semantic_speech_red';
 const disconnectedLikely = Boolean(defaultInput && !defaultAvMatch) || recentSilent;
+const requiredSpokenPhrase = 'TARS, what are we working on today?';
+const requiredDisplayPhrase = 'TARX, what are we working on today?';
+const selectedSelector = defaultAvMatch?.selector || avDevices[0]?.selector || ':0';
+const proofCommand = `TARX_VOICE_PROMPTED_CAPTURE=1 TARX_VOICE_NATIVE_CAPTURE=1 TARX_VOICE_NATIVE_CAPTURE_DEVICE=${JSON.stringify(selectedSelector)} npm run qa:voice-native-stt`;
+const manualLoopCommand = 'npm run qa:voice-manual-loop && npm run qa:runtime-spine-readiness';
 const checks = [
   { name: 'ffmpeg_avfoundation_available', pass: /AVFoundation audio devices:/i.test((av.stdout || '') + (av.stderr || '')) && avDevices.length > 0, detail: { ffmpeg, avExitOk: av.ok, avDevices } },
   { name: 'macos_default_input_present', pass: Boolean(defaultInput), detail: defaultInput },
@@ -98,6 +103,28 @@ const result = {
   status: failed.length === 0 ? 'voice_input_doctor_green' : 'voice_input_doctor_blocked',
   classification: failed.length === 0 ? 'green' : 'environment_red',
   firstBlocker: failed[0]?.name || null,
+  operatorProof: {
+    goal: 'Produce a local semantic STT proof without claiming production voice readiness.',
+    spokenPhrase: requiredSpokenPhrase,
+    displayPhrase: requiredDisplayPhrase,
+    selectedInput: defaultAvMatch || defaultInput || null,
+    command: proofCommand,
+    followupCommand: manualLoopCommand,
+    passRequires: [
+      'native_voice_stt_green',
+      'semanticSpeechGreen true',
+      'Bridge accepts tarx-stt-result.v1',
+      'supercomputerUsed false',
+      'browserFallbackUsed false',
+      'rawAudioLogged false',
+    ],
+    operatorInstructions: [
+      'Close or mute background audio.',
+      'Speak after the countdown beep.',
+      `Say exactly: ${requiredSpokenPhrase}`,
+      'If the proof passes, run the follow-up command to refresh manual loop and runtime-spine readiness.',
+    ],
+  },
   checks,
   systemInputs,
   avFoundationInputs: avDevices,
@@ -113,7 +140,7 @@ const result = {
   nextFix: disconnectedLikely
     ? 'Open macOS System Settings > Sound > Input, select a connected live microphone, verify input meter moves, then rerun spoken native STT.'
     : latestSemanticRed
-      ? 'Stop background audio, speak the required TARS phrase close to the selected microphone, then rerun native STT.'
+      ? `Stop background audio, speak "${requiredSpokenPhrase}" close to the selected microphone, then run: ${proofCommand}`
     : 'Rerun spoken native STT proof with the TARS phrase.',
   settingsUrls: {
     soundInput: 'x-apple.systempreferences:com.apple.Sound-Settings.extension?input',
