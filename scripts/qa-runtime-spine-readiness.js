@@ -47,6 +47,65 @@ const performance = evidence.runtimePerformance.json || {};
 const voiceReadiness = evidence.voicePrimeReadiness.json || {};
 const voiceOperatorAction = voiceReadiness.operatorAction || null;
 
+function operatorAction({
+  label,
+  kind,
+  runtime = 'Computer',
+  routeTruth = null,
+  status,
+  reason,
+  source,
+  requiresConfirmation = false,
+  guardrails = {},
+  evidence = {},
+  nextProof = null,
+}) {
+  return {
+    label,
+    kind,
+    runtime,
+    status,
+    reason,
+    source,
+    requiresConfirmation,
+    routeTruth: routeTruth || {
+      computer: true,
+      supercomputerUsed: false,
+      browserFallbackUsed: false,
+    },
+    guardrails: {
+      localOnly: true,
+      noProductionClaim: true,
+      noAutonomousExecution: true,
+      ...guardrails,
+    },
+    evidence,
+    nextProof,
+  };
+}
+
+function normalizeOperatorAction(action, fallbackEvidence = {}) {
+  if (!action || typeof action !== 'object') return null;
+  return {
+    ...action,
+    routeTruth: action.routeTruth || {
+      computer: true,
+      supercomputerUsed: action.guardrails?.supercomputerUsed === true,
+      browserFallbackUsed: action.guardrails?.browserFallbackUsed === true,
+    },
+    guardrails: {
+      localOnly: true,
+      noProductionClaim: true,
+      noAutonomousExecution: true,
+      ...(action.guardrails || {}),
+    },
+    evidence: {
+      ...fallbackEvidence,
+      ...(action.evidence || {}),
+    },
+  };
+}
+
 const manualVoiceGreen = evidence.voiceManualLoop.ok && manualLoop.status === 'voice_manual_loop_green' && manualLoop.ok === true;
 const strictWakeWordGreen = evidence.voiceNativeStt.ok && nativeStt.status === 'native_voice_stt_green' && nativeStt.semanticSpeechGreen === true;
 const pipecatBlockedHonestly = evidence.voicePipecatSpike.ok
@@ -72,6 +131,83 @@ const controlPlaneGreen = evidence.localOperator.ok
 const performancePresent = evidence.runtimePerformance.ok
   && ['runtime_spine_performance_green', 'runtime_spine_performance_degraded'].includes(performance.status);
 const mcpBoundaryPresent = Boolean(performance.mcp?.expectedGatesPresent);
+const operatorCopilot = performance.operatorCopilotContracts || {};
+const pointerContextGreen = Boolean(operatorCopilot.pointerContextGreen);
+const composerDraftGreen = Boolean(operatorCopilot.composerDraftGreen);
+const trainingLifecycleGreen = Boolean(operatorCopilot.trainingSessionLifecycleGreen);
+
+const operatorActions = [];
+const normalizedVoiceOperatorAction = normalizeOperatorAction(voiceOperatorAction, {
+  voicePrimeReadiness: evidence.voicePrimeReadiness.file,
+  voiceNativeStt: evidence.voiceNativeStt.file,
+});
+if (normalizedVoiceOperatorAction) operatorActions.push(normalizedVoiceOperatorAction);
+if (visionProposalReady || pointerContextGreen || composerDraftGreen) {
+  operatorActions.push(operatorAction({
+    label: 'Refresh pointer context',
+    kind: 'local_pointer_context_proof',
+    status: pointerContextGreen ? 'ready' : 'proposal_ready',
+    reason: 'Pointer, OCR, AX, and vision freshness are ready enough for Explain/Draft/Do with me proposals, while execution remains blocked.',
+    source: 'runtime_spine_performance.operatorCopilotContracts',
+    evidence: {
+      visionFreshness: evidence.visionFreshness.file,
+      runtimePerformance: evidence.runtimePerformance.file,
+      pointerContextGreen,
+      composerDraftGreen,
+      visionStatus: vision.status || null,
+    },
+    nextProof: 'Open Operator Copilot and confirm pointer context resolves active app, target label, freshness, and evidence age.',
+  }));
+}
+if (actionProposalSafe || operatorCopilot.actionProposalGreen) {
+  operatorActions.push(operatorAction({
+    label: 'Run proposal-only computer proof',
+    kind: 'computer_use_action_proposal_proof',
+    status: actionProposalSafe ? 'ready' : 'proposal_ready',
+    reason: 'Computer Use is green for proposal and confirmation gating; injector execution stays disabled until policy and fresh target proof pass.',
+    source: 'action_safety_gate',
+    requiresConfirmation: true,
+    guardrails: {
+      injectorExecutionEnabled: false,
+      completionRequiresActionResult: true,
+    },
+    evidence: {
+      actionSafetyGate: evidence.actionSafetyGate.file,
+      runtimePerformance: evidence.runtimePerformance.file,
+      actionProposalGreen: Boolean(operatorCopilot.actionProposalGreen),
+      actionConfirmBlockedWithoutInjector: Boolean(operatorCopilot.actionConfirmBlockedWithoutInjector),
+    },
+    nextProof: 'Create a Do with me proposal and verify TARX stops for confirmation instead of claiming execution.',
+  }));
+}
+if (trainingLifecycleGreen) {
+  operatorActions.push(operatorAction({
+    label: 'Start human-guided training proof',
+    kind: 'human_training_session_proof',
+    status: 'ready',
+    reason: 'Training session start, candidate staging, and end contracts are present in the runtime spine gauntlet.',
+    source: 'runtime_spine_performance.operatorCopilotContracts',
+    evidence: {
+      runtimePerformance: evidence.runtimePerformance.file,
+      trainingLifecycleGreen,
+    },
+    nextProof: 'Start a short guided session, mark one correction, save one candidate, then end the session with local evidence.',
+  }));
+}
+if (mcpBoundaryPresent) {
+  operatorActions.push(operatorAction({
+    label: 'Review MCP runtime boundary',
+    kind: 'developer_runtime_mcp_boundary_review',
+    status: 'ready',
+    reason: 'MCP readiness gates are declared and can be reviewed without promoting or deploying.',
+    source: 'runtime_spine_performance.mcp',
+    evidence: {
+      runtimePerformance: evidence.runtimePerformance.file,
+      mcp: performance.mcp || null,
+    },
+    nextProof: 'Review the local MCP readiness packet and verify developer-runtime tools stay scoped to the current Space/workstream.',
+  }));
+}
 
 record(checks, 'local_operator_control_plane_green', controlPlaneGreen, { file: evidence.localOperator.file, status: evidence.localOperator.json?.status || null });
 record(checks, 'manual_voice_internal_loop_green', manualVoiceGreen, { file: evidence.voiceManualLoop.file, status: manualLoop.status || null });
@@ -125,8 +261,14 @@ const result = {
   status,
   classification: status === 'runtime_spine_ready_internal_manual' ? 'green' : (status === 'runtime_spine_degraded' ? 'degraded' : 'blocked'),
   firstBlocker,
-  nextAction: voiceOperatorAction?.label || (firstBlocker ? `Resolve ${firstBlocker}` : 'Ready for internal manual runtime spine review.'),
-  operatorActions: voiceOperatorAction ? [voiceOperatorAction] : [],
+  nextAction: operatorActions[0]?.label || (firstBlocker ? `Resolve ${firstBlocker}` : 'Ready for internal manual runtime spine review.'),
+  operatorActions,
+  parallelNextActions: operatorActions.map((action) => ({
+    label: action.label,
+    kind: action.kind,
+    status: action.status,
+    reason: action.reason,
+  })),
   recommendation: status === 'runtime_spine_ready_internal_manual'
     ? 'INTERNAL_MANUAL_RUNTIME_SPINE_READY'
     : (status === 'runtime_spine_degraded' ? 'MERGE_WITH_DEGRADED_RUNTIME_WATCH' : 'STILL_BLOCKED'),
