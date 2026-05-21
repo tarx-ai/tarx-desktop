@@ -235,6 +235,7 @@ function inspectBridgeListeners() {
   record(checks, 'no_production_voice_claim', true, 'This readiness QA does not mark production voice ready.');
 
   const failed = checks.filter((check) => !check.pass);
+  const operatorProof = doctor.json?.operatorProof || null;
   const result = {
     schema: 'tarx-voice-prime-readiness.v1',
     ts: new Date().toISOString(),
@@ -242,6 +243,10 @@ function inspectBridgeListeners() {
     status: failed.length === 0 ? 'prime_voice_internal_loop_ready' : 'prime_voice_internal_loop_blocked',
     firstBlocker: failed[0]?.name || null,
     recommendation: failed.length === 0 ? 'INTERNAL_VOICE_LOOP_READY' : 'STILL_BLOCKED',
+    nextAction: failed.length === 0
+      ? 'Run manual voice loop and runtime-spine readiness before any release claim.'
+      : operatorProof?.command || 'Run qa:voice-input-doctor for the exact semantic STT proof command.',
+    operatorProof,
     checks,
     evidence: {
       inventory: inventory.file,
