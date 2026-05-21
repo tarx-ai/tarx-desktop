@@ -74,6 +74,7 @@ const PRIME_VOICE_EVIDENCE_PATHS = {
   pipecatSpike: '/Users/master/.tarx/runs/voice-pipecat-spike/latest.json',
   internalBetaLoop: '/Users/master/.tarx/runs/voice-internal-beta-loop/latest.json',
   ttsPlayback: '/Users/master/.tarx/runs/voice-tts-playback/latest.json',
+  primeReadiness: '/Users/master/.tarx/runs/voice-prime-readiness/latest.json',
 };
 const VOICE_UX_STATES = {
   off: 'Voice off',
@@ -859,9 +860,10 @@ async function primeVoiceEvidenceSnapshot() {
       nativeStt: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && unset TARX_VOICE_NATIVE_CAPTURE_DEVICE && TARX_VOICE_NATIVE_CAPTURE=1 npm run qa:voice-native-stt',
       mediaDevicesProduct: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && TARX_VOICE_MEDIADEVICES_INTERNAL=1 TARX_VOICE_CAPTURE_DRIVER=mediadevices npm run qa:voice-mediadevices-product-capture',
     },
+    operatorAction: evidence.primeReadiness?.json?.operatorAction || null,
     requiredSpokenPhrase: 'TARS, what are we working on today?',
     writtenDisplayPhrase: 'TARX, what are we working on today?',
-    nextAction: primeVoiceNextAction(state, evidence),
+    nextAction: evidence.primeReadiness?.json?.operatorAction?.label || primeVoiceNextAction(state, evidence),
   };
 }
 
@@ -2480,6 +2482,7 @@ function createWindow() {
           '<div class="tarx-voice-command" id="tarx-native-voice-override-warning" hidden></div>' +
           '<div class="tarx-voice-row">' +
           '  <button class="tarx-voice-primary" id="tarx-native-voice-ask" type="button" hidden>Ask TARX</button>' +
+          '  <button class="tarx-voice-primary" id="tarx-native-voice-proof" type="button" hidden>Start voice proof</button>' +
           '  <button class="tarx-voice-primary" id="tarx-native-voice-start" type="button">Native QA Start</button>' +
           '  <button id="tarx-native-voice-stop" type="button">Stop</button>' +
           '  <button class="tarx-voice-primary" id="tarx-native-voice-test" type="button">Test Microphone</button>' +
@@ -2513,6 +2516,7 @@ function createWindow() {
         var overrideWarningNode = panel.querySelector('#tarx-native-voice-override-warning');
         var startButton = panel.querySelector('#tarx-native-voice-start');
         var askButton = panel.querySelector('#tarx-native-voice-ask');
+        var proofButton = panel.querySelector('#tarx-native-voice-proof');
         var stopButton = panel.querySelector('#tarx-native-voice-stop');
         var testButton = panel.querySelector('#tarx-native-voice-test');
         var refreshButton = panel.querySelector('#tarx-native-voice-refresh');
@@ -2575,9 +2579,17 @@ function createWindow() {
             return;
           }
           var state = snapshot.state || 'idle';
+          var primeReadiness = snapshot.evidence && snapshot.evidence.primeReadiness && snapshot.evidence.primeReadiness.json;
+          var operatorAction = snapshot.operatorAction || primeReadiness && primeReadiness.operatorAction || null;
           if (stateBox) stateBox.dataset.tone = toneForState(state);
           if (stateLabel) stateLabel.textContent = state;
-          if (nextNode) nextNode.textContent = snapshot.nextAction || 'Run Voice Doctor.';
+          if (nextNode) nextNode.textContent = operatorAction
+            ? ((operatorAction.label || 'Start voice proof') + ': say "' + (operatorAction.displayPhrase || snapshot.writtenDisplayPhrase || 'TARX, what are we working on today?') + '"')
+            : (snapshot.nextAction || 'Run Voice Doctor.');
+          if (proofButton) {
+            proofButton.hidden = !operatorAction;
+            proofButton.textContent = operatorAction && operatorAction.label ? operatorAction.label : 'Start voice proof';
+          }
           if (routeTruthNode) {
             routeTruthNode.innerHTML = ''
               + row('Selected device', selectedEvidenceDevice(snapshot))
@@ -2624,6 +2636,9 @@ function createWindow() {
               evidenceNode.textContent = 'No voice evidence yet.';
             } else {
               evidenceNode.innerHTML = ''
+                + (operatorAction ? row('Next action', operatorAction.label || 'Start voice proof') : '')
+                + (operatorAction ? row('Say', operatorAction.displayPhrase || snapshot.writtenDisplayPhrase || 'TARX, what are we working on today?') : '')
+                + (operatorAction ? row('Proof route', 'Computer local, no browser fallback, no Supercomputer') : '')
                 + row('Inventory', inventory && inventory.status)
                 + row('Doctor', doctor && doctor.status)
                 + row('Device readiness', deviceReadiness && deviceReadiness.status)
@@ -2645,7 +2660,9 @@ function createWindow() {
             }
           }
           var command = snapshot.commands && (state === 'stt_semantic_red' || state === 'capture_non_silent' ? snapshot.commands.nativeStt : snapshot.commands.doctor);
-          if (commandNode) commandNode.textContent = 'Command execution is disabled here. Copy/run: ' + (command || 'No command available.');
+          if (commandNode) commandNode.textContent = operatorAction
+            ? 'Ready for local voice proof. Press Start voice proof, speak the phrase, and TARX will capture locally with MediaDevices and local Whisper.'
+            : 'Command execution is disabled here. Copy/run: ' + (command || 'No command available.');
           var devices = deviceReadiness && deviceReadiness.devicesAfterPermission || [];
           if (devices.length === 1 && /razer kiyo pro/i.test(String(devices[0].label || devices[0].name || '')) && state === 'stt_semantic_red') {
             setStatus('TARX can capture audio from Razer Kiyo Pro, but Whisper is not detecting clear speech. Select a different microphone in macOS Sound Input, then Refresh.');
@@ -2874,6 +2891,29 @@ function createWindow() {
             askButton.disabled = false;
           });
         });
+        if (proofButton) {
+          proofButton.addEventListener('click', function() {
+            if (proofButton.disabled) return;
+            proofButton.disabled = true;
+            setVoiceState('capture_running', 'Voice proof...');
+            if (stateLabel) stateLabel.textContent = 'capture_running';
+            setStatus('Speak now: TARX, what are we working on today? TARX will capture locally and verify semantic STT.');
+            if (commandNode) commandNode.textContent = 'Running local voice proof through Electron MediaDevices and local Whisper. Browser fallback and Supercomputer remain off.';
+            voice.testMicrophone({ deviceId: selectedDeviceValue(), durationMs: 6500 }).then(function(result) {
+              var passed = result && result.state === 'stt_green';
+              setVoiceState(passed ? 'idle' : 'blocked', passed ? 'Voice' : 'Voice blocked');
+              if (stateLabel) stateLabel.textContent = result && result.state ? result.state : 'stt_semantic_red';
+              setStatus(passed ? 'Voice proof passed locally.' : (result && result.nextAction ? result.nextAction : 'Voice proof did not pass yet.'));
+              return refreshVoiceSettings();
+            }).catch(function(error) {
+              setVoiceState('error', 'Voice blocked');
+              if (stateLabel) stateLabel.textContent = 'blocked_needs_mic_fix';
+              setStatus('Voice proof failed: ' + (error && error.message ? error.message : 'unknown'));
+            }).finally(function() {
+              proofButton.disabled = false;
+            });
+          });
+        }
         testButton.addEventListener('click', function() {
           if (testButton.disabled) return;
           testButton.disabled = true;

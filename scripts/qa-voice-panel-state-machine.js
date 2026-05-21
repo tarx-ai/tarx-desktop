@@ -53,6 +53,7 @@ record(checks, 'override_warning_visible_when_active', main.includes('Override a
 record(checks, 'clear_override_available', main.includes('Clear override') && main.includes('Override cleared'), null);
 record(checks, 'default_mode_uses_mediadevices_default', main.includes("defaultOption.value = useMediaDevices ? 'default'") && main.includes("return deviceSelect && deviceSelect.value ? deviceSelect.value : 'default'"), null);
 record(checks, 'test_microphone_button_runs_electron_path', main.includes('Test Microphone') && main.includes('voice.testMicrophone') && main.includes("ipcMain.handle('tarx:voice-test-microphone'"), null);
+record(checks, 'start_voice_proof_action_uses_product_path', main.includes('Start voice proof') && main.includes('operatorAction') && main.includes('Running local voice proof through Electron MediaDevices and local Whisper') && main.includes('voice.testMicrophone'), null);
 record(checks, 'ask_tarx_manual_voice_internal_flagged', main.includes('Ask TARX') && main.includes('voice.askManualInternal') && main.includes('TARX_VOICE_MANUAL_INTERNAL'), null);
 record(checks, 'mediadevices_product_path_primary', main.includes('MediaDevices product capture') && preload.includes('captureManualTurn') && preload.includes('tarx:voice-mediadevices-product-capture'), null);
 record(checks, 'avfoundation_labeled_qa_fallback', main.includes('Native AVFoundation is QA fallback') && main.includes('Native QA Start'), null);

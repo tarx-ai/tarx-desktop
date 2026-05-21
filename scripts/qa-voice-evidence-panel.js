@@ -20,6 +20,7 @@ const evidencePaths = {
   mediaDevicesSpike: '/Users/master/.tarx/runs/voice-mediadevices-spike/latest.json',
   pipecatSpike: '/Users/master/.tarx/runs/voice-pipecat-spike/latest.json',
   ttsPlayback: '/Users/master/.tarx/runs/voice-tts-playback/latest.json',
+  primeReadiness: '/Users/master/.tarx/runs/voice-prime-readiness/latest.json',
 };
 
 function readJson(file) {
@@ -42,6 +43,7 @@ record(checks, 'wav_path_rendered', main.includes("row('WAV'") && main.includes(
 record(checks, 'rms_peak_duration_rendered', main.includes("row('RMS / peak / duration'"), null);
 record(checks, 'transcript_rendered', main.includes("row('Transcript'"), null);
 record(checks, 'first_blocker_rendered', main.includes("row('First blocker'"), null);
+record(checks, 'operator_action_rendered', main.includes("row('Next action'") && main.includes("row('Proof route'") && main.includes('operatorAction'), null);
 record(checks, 'selected_device_rendered', main.includes("row('Selected microphone'"), null);
 record(checks, 'live_calibration_rendered', main.includes("row('Live calibration'") && main.includes('liveCalibration'), null);
 record(checks, 'mediadevices_product_capture_rendered', main.includes("row('MediaDevices capture'") && main.includes('mediaDevicesProduct'), null);
