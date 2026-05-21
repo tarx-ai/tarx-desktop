@@ -245,7 +245,7 @@ function inspectBridgeListeners() {
     recommendation: failed.length === 0 ? 'INTERNAL_VOICE_LOOP_READY' : 'STILL_BLOCKED',
     nextAction: failed.length === 0
       ? 'Run manual voice loop and runtime-spine readiness before any release claim.'
-      : operatorProof?.command || 'Run qa:voice-input-doctor for the exact semantic STT proof command.',
+      : operatorProof?.shellCommand || operatorProof?.command || 'Run qa:voice-input-doctor for the exact semantic STT proof command.',
     operatorProof,
     checks,
     evidence: {

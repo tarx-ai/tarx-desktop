@@ -88,8 +88,11 @@ const disconnectedLikely = Boolean(defaultInput && !defaultAvMatch) || recentSil
 const requiredSpokenPhrase = 'TARS, what are we working on today?';
 const requiredDisplayPhrase = 'TARX, what are we working on today?';
 const selectedSelector = defaultAvMatch?.selector || avDevices[0]?.selector || ':0';
+const electronRepo = path.resolve(__dirname, '..');
 const proofCommand = `TARX_VOICE_PROMPTED_CAPTURE=1 TARX_VOICE_NATIVE_CAPTURE=1 TARX_VOICE_NATIVE_CAPTURE_DEVICE=${JSON.stringify(selectedSelector)} npm run qa:voice-native-stt`;
 const manualLoopCommand = 'npm run qa:voice-manual-loop && npm run qa:runtime-spine-readiness';
+const proofShellCommand = `cd ${JSON.stringify(electronRepo)} && ${proofCommand}`;
+const followupShellCommand = `cd ${JSON.stringify(electronRepo)} && ${manualLoopCommand}`;
 const checks = [
   { name: 'ffmpeg_avfoundation_available', pass: /AVFoundation audio devices:/i.test((av.stdout || '') + (av.stderr || '')) && avDevices.length > 0, detail: { ffmpeg, avExitOk: av.ok, avDevices } },
   { name: 'macos_default_input_present', pass: Boolean(defaultInput), detail: defaultInput },
@@ -108,8 +111,11 @@ const result = {
     spokenPhrase: requiredSpokenPhrase,
     displayPhrase: requiredDisplayPhrase,
     selectedInput: defaultAvMatch || defaultInput || null,
+    cwd: electronRepo,
     command: proofCommand,
+    shellCommand: proofShellCommand,
     followupCommand: manualLoopCommand,
+    followupShellCommand,
     passRequires: [
       'native_voice_stt_green',
       'semanticSpeechGreen true',
@@ -122,7 +128,7 @@ const result = {
       'Close or mute background audio.',
       'Speak after the countdown beep.',
       `Say exactly: ${requiredSpokenPhrase}`,
-      'If the proof passes, run the follow-up command to refresh manual loop and runtime-spine readiness.',
+      'If the proof passes, run the follow-up command from the Electron repo to refresh manual loop and runtime-spine readiness.',
     ],
   },
   checks,
@@ -140,7 +146,7 @@ const result = {
   nextFix: disconnectedLikely
     ? 'Open macOS System Settings > Sound > Input, select a connected live microphone, verify input meter moves, then rerun spoken native STT.'
     : latestSemanticRed
-      ? `Stop background audio, speak "${requiredSpokenPhrase}" close to the selected microphone, then run: ${proofCommand}`
+      ? `Stop background audio, speak "${requiredSpokenPhrase}" close to the selected microphone, then run the proof from ${electronRepo}.`
     : 'Rerun spoken native STT proof with the TARS phrase.',
   settingsUrls: {
     soundInput: 'x-apple.systempreferences:com.apple.Sound-Settings.extension?input',
