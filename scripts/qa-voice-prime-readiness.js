@@ -236,6 +236,25 @@ function inspectBridgeListeners() {
 
   const failed = checks.filter((check) => !check.pass);
   const operatorProof = doctor.json?.operatorProof || null;
+  const operatorAction = operatorProof ? {
+    label: 'Start voice proof',
+    kind: 'local_voice_semantic_proof',
+    runtime: 'Computer',
+    cwd: operatorProof.cwd || null,
+    command: operatorProof.command || null,
+    shellCommand: operatorProof.shellCommand || null,
+    requiresUserSpeech: true,
+    spokenPhrase: operatorProof.spokenPhrase || 'TARS, what are we working on today?',
+    displayPhrase: operatorProof.displayPhrase || 'TARX, what are we working on today?',
+    selectedInput: operatorProof.selectedInput || null,
+    expectedResult: 'native_voice_stt_green with semanticSpeechGreen true and local Bridge acceptance.',
+    guardrails: {
+      productionVoiceReadyClaim: false,
+      supercomputerUsed: false,
+      browserFallbackUsed: false,
+      rawAudioLogged: false,
+    },
+  } : null;
   const result = {
     schema: 'tarx-voice-prime-readiness.v1',
     ts: new Date().toISOString(),
@@ -245,7 +264,8 @@ function inspectBridgeListeners() {
     recommendation: failed.length === 0 ? 'INTERNAL_VOICE_LOOP_READY' : 'STILL_BLOCKED',
     nextAction: failed.length === 0
       ? 'Run manual voice loop and runtime-spine readiness before any release claim.'
-      : operatorProof?.shellCommand || operatorProof?.command || 'Run qa:voice-input-doctor for the exact semantic STT proof command.',
+      : operatorAction?.label || 'Run voice input doctor to produce the next operator action.',
+    operatorAction,
     operatorProof,
     checks,
     evidence: {
