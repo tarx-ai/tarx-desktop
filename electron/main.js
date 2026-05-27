@@ -781,7 +781,7 @@ function primeVoiceNextAction(state, evidence) {
   if (state === 'internal_loop_ready') return 'Internal local voice loop evidence is green. Keep release claims disabled.';
   if (mediaDevicesCapture.firstBlocker) return `Resolve blocker: ${mediaDevicesCapture.firstBlocker}`;
   if (stt.firstBlocker) return `Resolve blocker: ${stt.firstBlocker}`;
-  return 'Run Voice Doctor, then run native STT with: TARS, what are we working on today?';
+  return 'Open microphone settings, then run a local voice check with: TARS, what are we working on today?';
 }
 
 async function primeVoiceEvidenceSnapshot() {
@@ -1196,7 +1196,7 @@ function nextActionForVoiceTestState(state, inventory = null) {
   if (state === 'stt_semantic_red') return 'Captured audio was non-silent but transcript did not match the required phrase. Listen to the WAV and retest close to the mic.';
   if (state === 'bridge_contracts_missing') return 'Bridge voice contracts are unavailable. Restart/update Prime Bridge before full loop testing.';
   if (state === 'stt_green') return 'Native live STT passed. Bridge and TTS evidence are still required before internal loop.';
-  return 'Refresh inputs, select macOS default input, then Test Microphone.';
+  return 'Refresh inputs, select the default input, then run a local voice check.';
 }
 
 async function transcribeNativeCaptureFile(captureEvent, capturePath) {
@@ -2272,10 +2272,10 @@ function createWindow() {
         z-index: 99999;
         display: inline-flex;
         align-items: center;
-        gap: 8px;
+        min-width: 38px;
         min-height: 38px;
-        max-width: min(320px, calc(100vw - 36px));
-        padding: 9px 12px;
+        max-width: 38px;
+        padding: 0;
         border: 1px solid rgba(255,255,255,0.16);
         border-radius: 8px;
         background: rgba(10, 10, 13, 0.88);
@@ -2288,30 +2288,39 @@ function createWindow() {
       }
       #tarx-native-voice-cta.tarx-voice-composer {
         position: static;
+        min-width: 32px;
         min-height: 32px;
         height: 32px;
+        width: 32px;
         margin-left: 8px;
-        padding: 6px 10px;
+        padding: 0;
         box-shadow: none;
         background: rgba(255,255,255,0.07);
       }
       #tarx-native-voice-cta:hover { background: rgba(20, 22, 28, 0.94); }
       #tarx-native-voice-cta.tarx-voice-composer:hover { background: rgba(255,255,255,0.11); }
       #tarx-native-voice-cta:disabled { opacity: 0.72; cursor: default; }
-      #tarx-native-voice-cta .tarx-voice-dot {
-        width: 8px;
-        height: 8px;
+      #tarx-native-voice-cta .tarx-voice-icon {
+        width: 14px;
+        height: 14px;
         flex: 0 0 auto;
-        border-radius: 999px;
-        background: #8A93A3;
+        display: block;
+        background: currentColor;
+        opacity: 0.82;
+        -webkit-mask: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='black' d='M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z'/%3E%3C/svg%3E") center / contain no-repeat;
+        mask: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='black' d='M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z'/%3E%3C/svg%3E") center / contain no-repeat;
       }
-      #tarx-native-voice-cta[data-state="listening"] .tarx-voice-dot { background: #22C55E; }
-      #tarx-native-voice-cta[data-state="blocked"] .tarx-voice-dot,
-      #tarx-native-voice-cta[data-state="error"] .tarx-voice-dot { background: #F97316; }
-      #tarx-native-voice-cta .tarx-voice-label {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+      #tarx-native-voice-cta[data-state="listening"] .tarx-voice-icon {
+        animation: tarxVoicePulse 1s ease-in-out infinite;
+        opacity: 1;
+      }
+      #tarx-native-voice-cta[data-state="blocked"] .tarx-voice-icon,
+      #tarx-native-voice-cta[data-state="error"] .tarx-voice-icon {
+        opacity: 0.48;
+      }
+      @keyframes tarxVoicePulse {
+        0%, 100% { transform: scaleY(0.82); }
+        50% { transform: scaleY(1.14); }
       }
       #tarx-native-voice-panel {
         position: fixed;
@@ -2439,7 +2448,7 @@ function createWindow() {
     mainWindow.webContents.executeJavaScript(`
       (function() {
         function installVoiceDesktop() {
-        var injectionVersion = 'mediadevices-product-v1';
+        var injectionVersion = 'voice-consumer-safe-v1';
         var existingButton = document.getElementById('tarx-native-voice-cta');
         var existingPanel = document.getElementById('tarx-native-voice-panel');
         if (
@@ -2468,47 +2477,58 @@ function createWindow() {
         var mediaDeviceInventory = [];
         button.id = 'tarx-native-voice-cta';
         button.type = 'button';
-        button.setAttribute('aria-label', 'Voice');
-        button.innerHTML = '<span class="tarx-voice-dot"></span><span class="tarx-voice-label">Voice</span>';
+        button.setAttribute('aria-label', 'Voice input');
+        button.title = 'Voice input';
+        button.innerHTML = '<span class="tarx-voice-icon" aria-hidden="true"></span>';
         panel.id = 'tarx-native-voice-panel';
         panel.setAttribute('data-tarx-voice-injection-version', injectionVersion);
         panel.hidden = true;
         panel.innerHTML = '' +
-          '<label for="tarx-native-voice-device">Input</label>' +
-          '<select id="tarx-native-voice-device"></select>' +
-          '<div class="tarx-voice-status" id="tarx-native-voice-default">Detecting macOS default input...</div>' +
-          '<label for="tarx-native-voice-custom" style="margin-top:10px">Override microphone deviceId/label</label>' +
-          '<input id="tarx-native-voice-custom" placeholder="Optional: MediaDevices deviceId or exact label" />' +
-          '<div class="tarx-voice-command" id="tarx-native-voice-override-warning" hidden></div>' +
-          '<div class="tarx-voice-row">' +
-          '  <button class="tarx-voice-primary" id="tarx-native-voice-ask" type="button" hidden>Ask TARX</button>' +
-          '  <button class="tarx-voice-primary" id="tarx-native-voice-proof" type="button" hidden>Start voice proof</button>' +
-          '  <button class="tarx-voice-primary" id="tarx-native-voice-start" type="button">Native QA Start</button>' +
-          '  <button id="tarx-native-voice-stop" type="button">Stop</button>' +
-          '  <button class="tarx-voice-primary" id="tarx-native-voice-test" type="button">Test Microphone</button>' +
-          '  <button id="tarx-native-voice-refresh" type="button">Refresh</button>' +
-          '  <button id="tarx-native-voice-clear-override" type="button">Clear override</button>' +
+          '<div class="tarx-voice-public">' +
+          '  <strong id="tarx-native-voice-public-title">Voice is not ready yet</strong>' +
+          '  <div id="tarx-native-voice-public-reason">Microphone access or local speech transcription still needs proof.</div>' +
+          '  <div class="tarx-voice-row">' +
+          '    <button class="tarx-voice-primary" id="tarx-native-voice-public-check" type="button">Run voice check</button>' +
+          '    <button id="tarx-native-voice-public-settings" type="button">Open settings</button>' +
+          '  </div>' +
           '</div>' +
-          '<div class="tarx-voice-row">' +
-          '  <button id="tarx-native-voice-sound" type="button">Sound Input</button>' +
-          '  <button id="tarx-native-voice-bluetooth" type="button">Bluetooth</button>' +
-          '  <button id="tarx-native-voice-privacy" type="button">Mic Privacy</button>' +
-          '</div>' +
-          '<div class="tarx-voice-row">' +
-          '  <button id="tarx-native-voice-doctor" type="button">Run Voice Doctor</button>' +
-          '  <button id="tarx-native-voice-copy-command" type="button">Copy QA command</button>' +
-          '  <button id="tarx-native-voice-mediadevices-spike" type="button" hidden>MediaDevices Spike</button>' +
-          '  <button id="tarx-native-voice-pipecat-spike" type="button" hidden>Pipecat Spike</button>' +
-          '</div>' +
-          '<div class="tarx-voice-state" id="tarx-native-voice-state" data-tone="neutral">' +
-          '  <strong id="tarx-native-voice-state-label">inventory_loading</strong>' +
-          '  <div id="tarx-native-voice-next">Loading voice state...</div>' +
-          '</div>' +
-          '<div class="tarx-voice-kv" id="tarx-native-voice-route-truth"></div>' +
-          '<div class="tarx-voice-evidence" id="tarx-native-voice-evidence">No voice evidence yet.</div>' +
-          '<div class="tarx-voice-command" id="tarx-native-voice-command">Command execution is disabled from this app panel.</div>' +
-          '<div class="tarx-voice-status" id="tarx-native-voice-status">Loading voice settings...</div>' +
-          '<div class="tarx-voice-note">MediaDevices product capture. Native AVFoundation is QA fallback. Browser fallback and Supercomputer stay off.</div>';
+          '<div class="tarx-voice-advanced" id="tarx-native-voice-advanced" hidden aria-hidden="true">' +
+          '  <label for="tarx-native-voice-device">Input</label>' +
+          '  <select id="tarx-native-voice-device"></select>' +
+          '  <div class="tarx-voice-status" id="tarx-native-voice-default">Detecting default input...</div>' +
+          '  <label for="tarx-native-voice-custom" style="margin-top:10px">Custom input reference</label>' +
+          '  <input id="tarx-native-voice-custom" placeholder="Optional internal input reference" />' +
+          '  <div class="tarx-voice-command" id="tarx-native-voice-override-warning" hidden></div>' +
+          '  <div class="tarx-voice-row">' +
+          '    <button class="tarx-voice-primary" id="tarx-native-voice-ask" type="button" hidden>Ask TARX</button>' +
+          '    <button class="tarx-voice-primary" id="tarx-native-voice-proof" type="button" hidden>Start voice proof</button>' +
+          '    <button class="tarx-voice-primary" id="tarx-native-voice-start" type="button">Start local capture</button>' +
+          '    <button id="tarx-native-voice-stop" type="button">Stop</button>' +
+          '    <button class="tarx-voice-primary" id="tarx-native-voice-test" type="button">Run local check</button>' +
+          '    <button id="tarx-native-voice-refresh" type="button">Refresh</button>' +
+          '    <button id="tarx-native-voice-clear-override" type="button">Clear custom input</button>' +
+          '  </div>' +
+          '  <div class="tarx-voice-row">' +
+          '    <button id="tarx-native-voice-sound" type="button">Sound Input</button>' +
+          '    <button id="tarx-native-voice-bluetooth" type="button">Bluetooth</button>' +
+          '    <button id="tarx-native-voice-privacy" type="button">Mic Privacy</button>' +
+          '  </div>' +
+          '  <div class="tarx-voice-row">' +
+          '    <button id="tarx-native-voice-doctor" type="button">Open diagnostics</button>' +
+          '    <button id="tarx-native-voice-copy-command" type="button">Copy internal command</button>' +
+          '    <button id="tarx-native-voice-mediadevices-spike" type="button" hidden>MediaDevices Spike</button>' +
+          '    <button id="tarx-native-voice-pipecat-spike" type="button" hidden>Pipecat Spike</button>' +
+          '  </div>' +
+          '  <div class="tarx-voice-state" id="tarx-native-voice-state" data-tone="neutral">' +
+          '    <strong id="tarx-native-voice-state-label">inventory_loading</strong>' +
+          '    <div id="tarx-native-voice-next">Loading voice state...</div>' +
+          '  </div>' +
+          '  <div class="tarx-voice-kv" id="tarx-native-voice-route-truth"></div>' +
+          '  <div class="tarx-voice-evidence" id="tarx-native-voice-evidence">No voice evidence yet.</div>' +
+          '  <div class="tarx-voice-command" id="tarx-native-voice-command">Command execution is disabled from this app panel.</div>' +
+          '  <div class="tarx-voice-status" id="tarx-native-voice-status">Loading voice settings...</div>' +
+          '  <div class="tarx-voice-note">Local capture diagnostics are internal. Browser fallback and Supercomputer stay off.</div>' +
+          '</div>';
         var deviceSelect = panel.querySelector('#tarx-native-voice-device');
         var customInput = panel.querySelector('#tarx-native-voice-custom');
         var statusNode = panel.querySelector('#tarx-native-voice-status');
@@ -2528,6 +2548,10 @@ function createWindow() {
         var copyCommandButton = panel.querySelector('#tarx-native-voice-copy-command');
         var mediaDevicesSpikeButton = panel.querySelector('#tarx-native-voice-mediadevices-spike');
         var pipecatSpikeButton = panel.querySelector('#tarx-native-voice-pipecat-spike');
+        var publicTitleNode = panel.querySelector('#tarx-native-voice-public-title');
+        var publicReasonNode = panel.querySelector('#tarx-native-voice-public-reason');
+        var publicCheckButton = panel.querySelector('#tarx-native-voice-public-check');
+        var publicSettingsButton = panel.querySelector('#tarx-native-voice-public-settings');
         var stateBox = panel.querySelector('#tarx-native-voice-state');
         var stateLabel = panel.querySelector('#tarx-native-voice-state-label');
         var nextNode = panel.querySelector('#tarx-native-voice-next');
@@ -2536,8 +2560,27 @@ function createWindow() {
         var commandNode = panel.querySelector('#tarx-native-voice-command');
         function setVoiceState(state, label) {
           button.dataset.state = state || 'idle';
-          var labelNode = button.querySelector('.tarx-voice-label');
-          if (labelNode) labelNode.textContent = label || 'Voice';
+          button.setAttribute('aria-label', 'Voice input');
+          button.title = 'Voice input';
+          setPublicVoiceCopy(state || 'idle');
+        }
+        function setPublicVoiceCopy(state) {
+          if (!publicTitleNode || !publicReasonNode) return;
+          if (state === 'permission_needed') {
+            publicTitleNode.textContent = 'Microphone permission needed';
+            publicReasonNode.textContent = 'Allow microphone access before using voice input.';
+            if (publicCheckButton) publicCheckButton.textContent = 'Allow microphone';
+            return;
+          }
+          if (state === 'listening' || state === 'capture_running') {
+            publicTitleNode.textContent = 'Listening';
+            publicReasonNode.textContent = 'Voice input is capturing locally. Review before sending.';
+            if (publicCheckButton) publicCheckButton.textContent = 'Stop';
+            return;
+          }
+          publicTitleNode.textContent = 'Voice is not ready yet';
+          publicReasonNode.textContent = 'Microphone access or local speech transcription still needs proof.';
+          if (publicCheckButton) publicCheckButton.textContent = 'Run voice check';
         }
         function setStatus(text) {
           if (statusNode) statusNode.textContent = text || '';
@@ -2585,7 +2628,7 @@ function createWindow() {
           if (stateLabel) stateLabel.textContent = state;
           if (nextNode) nextNode.textContent = operatorAction
             ? ((operatorAction.label || 'Start voice proof') + ': say "' + (operatorAction.displayPhrase || snapshot.writtenDisplayPhrase || 'TARX, what are we working on today?') + '"')
-            : (snapshot.nextAction || 'Run Voice Doctor.');
+            : (snapshot.nextAction || 'Open microphone settings, then run a local voice check.');
           if (proofButton) {
             proofButton.hidden = !operatorAction;
             proofButton.textContent = operatorAction && operatorAction.label ? operatorAction.label : 'Start voice proof';
@@ -2752,7 +2795,7 @@ function createWindow() {
           var defaultSelector = native && native.selectedDevice && native.selectedDevice.source === 'macos_default_input' ? native.selectedDevice.selector : '';
           var defaultOption = document.createElement('option');
           defaultOption.value = useMediaDevices ? 'default' : '';
-          defaultOption.textContent = 'Use macOS Default Input' + (defaultName !== 'unknown' ? ' - ' + defaultName + (!useMediaDevices && defaultSelector ? ' (' + defaultSelector + ')' : '') : '');
+          defaultOption.textContent = 'Default Input' + (defaultName !== 'unknown' ? ' - ' + defaultName + (!useMediaDevices && defaultSelector ? ' (' + defaultSelector + ')' : '') : '');
           deviceSelect.appendChild(defaultOption);
           if (!devices.length) {
             var empty = document.createElement('option');
@@ -2784,13 +2827,13 @@ function createWindow() {
             statusNode.textContent = 'AirPods are connected, but not visible to TARX/MediaDevices. Select them in macOS Sound Input, reconnect Bluetooth, or use a wired/built-in mic.';
             return;
           }
-          setStatus('Mode: ' + (selectedDeviceValue() !== 'default' ? 'override' : 'macOS default input') + ' · Product driver: ' + (useMediaDevices ? 'MediaDevices' : 'native QA fallback'));
+          setStatus('Mode: ' + (selectedDeviceValue() !== 'default' ? 'custom input' : 'default input') + ' · Product driver: ' + (useMediaDevices ? 'MediaDevices' : 'native capture fallback'));
           if (!manualEnabled && statusNode) {
             setStatus('Manual Voice Test is internal-flagged. Set TARX_LOCAL_OPERATOR_BETA=1 TARX_VOICE_MANUAL_INTERNAL=1 TARX_VOICE_MEDIADEVICES_INTERNAL=1 TARX_VOICE_CAPTURE_DRIVER=mediadevices to enable Ask TARX.');
           }
         }
         function refreshVoiceSettings() {
-          setVoiceState(active ? 'listening' : 'blocked', active ? 'Listening' : 'Voice setup');
+          setVoiceState(active ? 'listening' : 'blocked', active ? 'Listening' : 'Voice input');
           if (stateLabel) stateLabel.textContent = 'inventory_loading';
           return Promise.all([
             voice.getRuntimeCapabilities(),
@@ -2805,11 +2848,11 @@ function createWindow() {
             if (next && next.featureFlags && (next.featureFlags.TARX_VOICE_CAPTURE_DRIVER === 'mediadevices' ? next.featureFlags.TARX_VOICE_MEDIADEVICES_INTERNAL : next.featureFlags.TARX_VOICE_NATIVE_CAPTURE)) {
               setVoiceState(active ? 'listening' : 'idle', active ? 'Listening' : 'Voice');
             } else {
-              setVoiceState('blocked', 'Voice setup');
+              setVoiceState('blocked', 'Voice input');
             }
             return next;
           }).catch(function(error) {
-            setVoiceState('blocked', 'Voice setup');
+            setVoiceState('blocked', 'Voice input');
             setStatus('Unable to load voice settings: ' + (error && error.message ? error.message : 'unknown'));
           });
         }
@@ -2935,6 +2978,20 @@ function createWindow() {
             testButton.disabled = false;
           });
         });
+        if (publicCheckButton) {
+          publicCheckButton.addEventListener('click', function() {
+            if (active && stopButton) {
+              stopButton.click();
+              return;
+            }
+            if (testButton) testButton.click();
+          });
+        }
+        if (publicSettingsButton) {
+          publicSettingsButton.addEventListener('click', function() {
+            if (privacyButton) privacyButton.click();
+          });
+        }
         refreshButton.addEventListener('click', refreshVoiceSettings);
         deviceSelect.addEventListener('change', function() { updateOverrideWarning(capabilities && capabilities.nativeCapture, mediaDeviceInventory); });
         customInput.addEventListener('input', function() { updateOverrideWarning(capabilities && capabilities.nativeCapture, mediaDeviceInventory); });
@@ -2962,7 +3019,7 @@ function createWindow() {
         doctorButton.addEventListener('click', function() {
           var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-doctor';
           if (d.copyText) d.copyText(command);
-          if (commandNode) commandNode.textContent = 'Copied Voice Doctor command. Command execution is disabled from this app panel: ' + command;
+          if (commandNode) commandNode.textContent = 'Copied internal diagnostic command. Command execution is disabled from this app panel: ' + command;
         });
         copyCommandButton.addEventListener('click', function() {
           var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && TARX_VOICE_MEDIADEVICES_INTERNAL=1 TARX_VOICE_CAPTURE_DRIVER=mediadevices npm run qa:voice-mediadevices-product-capture';

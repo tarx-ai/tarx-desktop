@@ -46,17 +46,31 @@ for (const state of requiredStates) {
 }
 record(checks, 'voice_cta_visible_in_composer', main.includes('tarx-native-voice-cta') && main.includes('tarx-voice-composer') && main.includes('findComposerMount'), null);
 record(checks, 'panel_opens_from_voice_cta', main.includes('panel.hidden = !panel.hidden') && main.includes('refreshVoiceSettings'), null);
-record(checks, 'stale_voice_injection_replaced', main.includes('mediadevices-product-v1') && main.includes('data-tarx-voice-injection-version') && main.includes('existingPanel.remove()'), null);
+record(checks, 'stale_voice_injection_replaced', main.includes('voice-consumer-safe-v1') && main.includes('data-tarx-voice-injection-version') && main.includes('existingPanel.remove()'), null);
 record(checks, 'device_inventory_renders', main.includes('mediaDeviceInventory') && main.includes('No microphones visible to MediaDevices'), null);
-record(checks, 'macos_default_input_mode_visible', main.includes('Use macOS Default Input') && main.includes('macOS default input'), null);
+record(checks, 'composer_voice_control_is_icon_only', main.includes("button.setAttribute('aria-label', 'Voice input')") && main.includes("button.innerHTML = '<span class=\"tarx-voice-icon\""), null);
+record(checks, 'public_panel_has_safe_copy', main.includes('Voice is not ready yet') && main.includes('Run voice check') && main.includes('Open settings'), null);
+record(checks, 'public_panel_hides_diagnostics', main.includes('id=\"tarx-native-voice-advanced\" hidden aria-hidden=\"true\"'), null);
+record(checks, 'default_input_mode_internal_only', main.includes('Default Input') && main.includes('default input'), null);
 record(checks, 'override_warning_visible_when_active', main.includes('Override active: using') && main.includes('not macOS default'), null);
-record(checks, 'clear_override_available', main.includes('Clear override') && main.includes('Override cleared'), null);
+record(checks, 'clear_custom_input_available', main.includes('Clear custom input') && main.includes('Override cleared'), null);
 record(checks, 'default_mode_uses_mediadevices_default', main.includes("defaultOption.value = useMediaDevices ? 'default'") && main.includes("return deviceSelect && deviceSelect.value ? deviceSelect.value : 'default'"), null);
-record(checks, 'test_microphone_button_runs_electron_path', main.includes('Test Microphone') && main.includes('voice.testMicrophone') && main.includes("ipcMain.handle('tarx:voice-test-microphone'"), null);
+record(checks, 'run_voice_check_uses_electron_path', main.includes('Run voice check') && main.includes('voice.testMicrophone') && main.includes("ipcMain.handle('tarx:voice-test-microphone'"), null);
 record(checks, 'start_voice_proof_action_uses_product_path', main.includes('Start voice proof') && main.includes('operatorAction') && main.includes('Running local voice proof through Electron MediaDevices and local Whisper') && main.includes('voice.testMicrophone'), null);
 record(checks, 'ask_tarx_manual_voice_internal_flagged', main.includes('Ask TARX') && main.includes('voice.askManualInternal') && main.includes('TARX_VOICE_MANUAL_INTERNAL'), null);
 record(checks, 'mediadevices_product_path_primary', main.includes('MediaDevices product capture') && preload.includes('captureManualTurn') && preload.includes('tarx:voice-mediadevices-product-capture'), null);
-record(checks, 'avfoundation_labeled_qa_fallback', main.includes('Native AVFoundation is QA fallback') && main.includes('Native QA Start'), null);
+record(checks, 'native_capture_fallback_internal_only', main.includes('native capture fallback') && main.includes('Start local capture'), null);
+const oldPublicDebugLabels = [
+  ['Voice', 'setup'],
+  ['Voice', 'Setup'],
+  ['Native', 'QA', 'Start'],
+  ['Test', 'Microphone'],
+  ['Run', 'Voice', 'Doctor'],
+  ['Copy', 'QA', 'command'],
+  ['Override', 'microphone'],
+  ['Use', 'macOS', 'Default', 'Input'],
+].map((parts) => parts.join(' '));
+record(checks, 'old_public_debug_labels_removed', !oldPublicDebugLabels.some((label) => main.includes(label)), null);
 record(checks, 'mediadevices_spike_internal_flagged', main.includes('MediaDevices Spike') && main.includes('runMediaDevicesSpike') && main.includes('TARX_VOICE_MEDIADEVICES_INTERNAL'), null);
 record(checks, 'pipecat_spike_internal_flagged', main.includes('Pipecat Spike') && main.includes('runPipecatSpike') && main.includes('TARX_VOICE_PIPECAT_INTERNAL'), null);
 record(checks, 'bluetooth_settings_shortcut_visible', main.includes('Bluetooth') && main.includes('tarx:voice-open-bluetooth-settings'), null);

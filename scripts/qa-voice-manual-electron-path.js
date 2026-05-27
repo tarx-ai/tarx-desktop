@@ -20,7 +20,7 @@ record(checks, 'requires_internal_flags', main.includes('TARX_LOCAL_OPERATOR_BET
 record(checks, 'manual_ui_hidden_without_flag', main.includes('id="tarx-native-voice-ask"') && main.includes('askButton.hidden = !manualEnabled'), null);
 record(checks, 'ipc_handler_exists', main.includes("ipcMain.handle('tarx:voice-manual-internal-ask'") && preload.includes('askManualInternal'), null);
 record(checks, 'mediadevices_product_capture_used', preload.includes('const mediaDevicesResult = await captureManualTurn(payload)') && main.includes("source: 'electron_mediadevices'"), null);
-record(checks, 'native_capture_kept_as_qa_fallback', main.includes('Native AVFoundation is QA fallback') && main.includes('runVoicePanelMicrophoneTest(payload)'), null);
+record(checks, 'native_capture_kept_as_internal_fallback', main.includes('native capture fallback') && main.includes('runVoicePanelMicrophoneTest(payload)'), null);
 record(checks, 'browser_fallback_not_used', main.includes('browserFallbackUsed: false') && main.includes("browserFallback: 'Off'"), null);
 record(checks, 'supercomputer_not_used', main.includes('supercomputerUsed: false') && main.includes("supercomputer: 'Off'"), null);
 record(checks, 'operating_brief_answer_source', main.includes('manualVoiceAnswerFromEvidence') && main.includes('local_prime_operating_status_from_evidence'), null);
