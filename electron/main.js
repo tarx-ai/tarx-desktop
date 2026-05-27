@@ -91,6 +91,10 @@ const VISION_FRESHNESS_POLICY_MS = {
   actionProposal: 1000,
   actionExecution: 500,
 };
+const POINTER_FRESHNESS_POLICY_MS = {
+  fresh: 2000,
+  aging: 10000,
+};
 const LOCAL_OPERATOR_PACK_MANIFEST = path.join(__dirname, '..', 'resources', 'local-operator-packs.json');
 
 let mainWindow = null;
@@ -3361,6 +3365,13 @@ function boundsToPlain(bounds = {}) {
   };
 }
 
+function pointInsideRect(point, rect) {
+  return point.x >= rect.x
+    && point.y >= rect.y
+    && point.x <= rect.x + rect.width
+    && point.y <= rect.y + rect.height;
+}
+
 function rectArea(rect) {
   return Math.max(0, rect.width) * Math.max(0, rect.height);
 }
@@ -3431,6 +3442,254 @@ function evaluateVisionFreshnessPolicy(observation) {
       : (Number.isFinite(freshness) && freshness <= VISION_FRESHNESS_POLICY_MS.actionExecution ? 'execution_disabled_internal_beta' : 'freshness_over_500ms'),
     thresholds_ms: VISION_FRESHNESS_POLICY_MS,
   };
+}
+
+function pointerFreshnessState(freshnessMs) {
+  if (!Number.isFinite(Number(freshnessMs))) return 'none';
+  if (freshnessMs <= POINTER_FRESHNESS_POLICY_MS.fresh) return 'fresh';
+  if (freshnessMs <= POINTER_FRESHNESS_POLICY_MS.aging) return 'aging';
+  return 'stale';
+}
+
+function mapMacMediaPermission(kind) {
+  if (process.platform !== 'darwin' || !systemPreferences?.getMediaAccessStatus) return 'unavailable';
+  try {
+    const status = systemPreferences.getMediaAccessStatus(kind);
+    if (status === 'granted') return 'granted';
+    if (status === 'denied' || status === 'restricted') return 'denied';
+    if (status === 'not-determined') return 'not_determined';
+    return 'unavailable';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function electronPointerPermissions() {
+  const voice = getVoicePermissionStatus();
+  return {
+    screen_recording: mapMacMediaPermission('screen'),
+    accessibility: process.platform === 'darwin' && systemPreferences?.isTrustedAccessibilityClient
+      ? (systemPreferences.isTrustedAccessibilityClient(false) ? 'granted' : 'not_determined')
+      : 'unavailable',
+    input_monitoring: 'unavailable',
+    microphone: voice.status === 'granted'
+      ? 'granted'
+      : (voice.status === 'denied' || voice.status === 'restricted' ? 'denied' : 'not_determined'),
+    local_bridge: 'connected',
+  };
+}
+
+function unavailablePointerContext(reason = 'pointer_evidence_missing') {
+  const actionState = pointerProposalActions(false);
+  return {
+    schema: 'tarx-pointer-context.v1',
+    endpoint: '/v1/pointer/context',
+    status: reason === 'permission_denied' ? 'blocked' : 'unavailable',
+    first_blocker: reason,
+    captured_at: null,
+    freshness_ms: null,
+    freshness: 'none',
+    source: 'unavailable',
+    permission_state: electronPointerPermissions(),
+    pointer: {
+      x: null,
+      y: null,
+      source: 'unavailable',
+      captured_at: null,
+      freshness_ms: null,
+    },
+    surface: {
+      active_app: null,
+      active_window_title: null,
+      url_or_document_if_available: null,
+      permission_state: 'unknown',
+    },
+    target: {
+      kind: 'unknown',
+      label: null,
+      text: null,
+      bounds: null,
+      confidence: 0,
+      source: 'unknown',
+      evidence_source: 'unknown',
+    },
+    evidence: {
+      ocr_evidence_id: null,
+      screenshot_evidence_id: null,
+      ax_evidence_id: null,
+      dom_evidence_id: null,
+      persisted: false,
+      evidence_created: false,
+    },
+    actions: {
+      explain_available: actionState.explain_available,
+      draft_available: actionState.draft_available,
+      correct_available: actionState.correct_available,
+      execute_available: false,
+      execute_requires_confirmation: true,
+    },
+    proposal_actions: actionState.proposal_actions,
+    limits: pointerActionLimits(),
+    activity_trace: pointerActivityTrace([], [], [], false),
+  };
+}
+
+function pointerActionLimits() {
+  return {
+    can_click: false,
+    can_type: false,
+    can_send: false,
+    reason: 'Pointer Context V1 is evidence/proposal only.',
+  };
+}
+
+function pointerProposalActions(enabled) {
+  const reason = enabled
+    ? 'Fresh pointer evidence can support a proposal, but native execution stays disabled.'
+    : 'Pointer Context needs fresh OCR, AX, DOM, or screenshot evidence first.';
+  return {
+    explain_available: Boolean(enabled),
+    draft_available: Boolean(enabled),
+    correct_available: Boolean(enabled),
+    execute_available: false,
+    execute_requires_confirmation: true,
+    proposal_actions: ['Explain', 'Draft', 'Correct TARX', 'Do with me'].map((label) => ({
+      label,
+      enabled: Boolean(enabled),
+      proposal_only: true,
+      execute_available: false,
+      requires_confirmation: true,
+      reason,
+    })),
+  };
+}
+
+function pointerActivityTrace(observed, inferred, evidenceRefs, available) {
+  return {
+    title: available ? 'Pointer evidence ready' : 'Pointer evidence unavailable',
+    status: available ? 'available' : 'unavailable',
+    observed,
+    inferred,
+    evidence_refs: evidenceRefs,
+    next_action: available
+      ? 'Use Explain, Draft, Correct TARX, or Do with me as proposal-only actions.'
+      : 'Capture fresh pointer, OCR, AX, DOM, or screenshot evidence first.',
+    limits: pointerActionLimits(),
+  };
+}
+
+async function resolveDomTargetAtPoint(windowRef, point, windowBounds) {
+  if (!windowRef || windowRef.isDestroyed() || !pointInsideRect(point, windowBounds)) return null;
+  const clientX = point.x - windowBounds.x;
+  const clientY = point.y - windowBounds.y;
+  try {
+    return await windowRef.webContents.executeJavaScript(`(() => {
+      const el = document.elementFromPoint(${JSON.stringify(clientX)}, ${JSON.stringify(clientY)});
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      const label = String(el.getAttribute('aria-label') || el.getAttribute('title') || el.innerText || el.textContent || el.tagName || '').replace(/\\s+/g, ' ').trim().slice(0, 160);
+      return {
+        kind: String(el.tagName || 'element').toLowerCase(),
+        label: label || null,
+        text: label || null,
+        bounds: {
+          x: Math.round(rect.x + window.screenX),
+          y: Math.round(rect.y + window.screenY),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+        confidence: label ? 0.72 : 0.44,
+        source: 'dom',
+      };
+    })()`, true);
+  } catch {
+    return null;
+  }
+}
+
+async function getPointerContext(payload = {}) {
+  const windowRef = targetWindowForVisionAction();
+  if (!windowRef || windowRef.isDestroyed()) return unavailablePointerContext('pointer_evidence_missing');
+
+  const capturedAtMs = Date.now();
+  const capturedAt = new Date(capturedAtMs).toISOString();
+  const point = screen.getCursorScreenPoint();
+  const windowBounds = boundsToPlain(windowRef.getBounds());
+  const surface = await getRendererSurface(windowRef);
+  const target = await resolveDomTargetAtPoint(windowRef, point, windowBounds);
+  const freshnessMs = Date.now() - capturedAtMs;
+  const freshness = pointerFreshnessState(freshnessMs);
+  const domEvidenceId = target ? `dom-${capturedAtMs}-${Math.random().toString(16).slice(2, 8)}` : null;
+  const hasEvidence = Boolean(target);
+  const observed = [
+    `Pointer coordinates captured from Electron native screen API.`,
+    `Active window observed: ${surface.title || windowRef.getTitle() || 'unknown'}.`,
+  ];
+  const inferred = target
+    ? [`Target candidate inferred from DOM with confidence ${Number(target.confidence || 0).toFixed(2)}.`]
+    : ['No DOM, OCR, or AX target evidence at pointer.'];
+  const actionState = pointerProposalActions(hasEvidence && (freshness === 'fresh' || freshness === 'aging'));
+
+  const context = {
+    schema: 'tarx-pointer-context.v1',
+    endpoint: '/v1/pointer/context',
+    status: hasEvidence ? 'available' : 'unavailable',
+    first_blocker: hasEvidence ? null : 'pointer_evidence_missing',
+    captured_at: capturedAt,
+    freshness_ms: freshnessMs,
+    freshness,
+    source: 'native_helper',
+    permission_state: electronPointerPermissions(),
+    pointer: {
+      x: Math.round(point.x),
+      y: Math.round(point.y),
+      source: 'native_helper',
+      captured_at: capturedAt,
+      freshness_ms: freshnessMs,
+    },
+    surface: {
+      active_app: 'TARX Electron',
+      active_window_title: surface.title || windowRef.getTitle() || null,
+      url_or_document_if_available: surface.url || windowRef.webContents.getURL() || null,
+      permission_state: 'granted',
+    },
+    target: target ? {
+      ...target,
+      evidence_source: 'dom',
+    } : {
+      kind: 'unknown',
+      label: null,
+      text: null,
+      bounds: null,
+      confidence: 0,
+      source: 'unknown',
+      evidence_source: 'unknown',
+    },
+    evidence: {
+      ocr_evidence_id: null,
+      screenshot_evidence_id: null,
+      ax_evidence_id: null,
+      dom_evidence_id: domEvidenceId,
+      persisted: false,
+      evidence_created: hasEvidence,
+    },
+    actions: {
+      explain_available: actionState.explain_available,
+      draft_available: actionState.draft_available,
+      correct_available: actionState.correct_available,
+      execute_available: false,
+      execute_requires_confirmation: true,
+    },
+    proposal_actions: actionState.proposal_actions,
+    limits: pointerActionLimits(),
+    activity_trace: pointerActivityTrace(observed, inferred, domEvidenceId ? [domEvidenceId] : [], hasEvidence),
+    request: {
+      reason: String(payload.reason || 'manual'),
+      proposal_only: true,
+    },
+  };
+  writeDiagnostic('latest-pointer-context.json', context);
+  return context;
 }
 
 async function getRendererSurface(windowRef) {
@@ -3894,6 +4153,10 @@ ipcMain.handle('tarx:safe-shell-quit', () => {
 
 ipcMain.handle('tarx:vision-observe', async (_event, payload) => {
   return observeVisionSurface(payload?.reason || 'manual');
+});
+
+ipcMain.handle('tarx:pointer-context', async (_event, payload = {}) => {
+  return getPointerContext(payload || {});
 });
 
 ipcMain.handle('tarx:action-propose', async (_event, payload) => {

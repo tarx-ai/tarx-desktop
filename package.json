@@ -44,6 +44,7 @@
     "qa:voice-prime-readiness": "node scripts/qa-voice-prime-readiness.js",
     "qa:runtime-spine-performance": "node scripts/qa-runtime-spine-performance.js",
     "qa:runtime-spine-readiness": "node scripts/qa-runtime-spine-readiness.js",
+    "qa:pointer-runtime-evidence": "node scripts/qa-pointer-runtime-evidence.js",
     "qa:electron-black-screen-recovery": "node scripts/qa-electron-black-screen-recovery.js",
     "qa:electron-release-stability": "node scripts/qa-electron-release-stability.js",
     "qa:electron-navigation-boundary": "node scripts/qa-electron-navigation-boundary.js"

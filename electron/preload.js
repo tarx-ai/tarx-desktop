@@ -570,6 +570,9 @@ contextBridge.exposeInMainWorld('tarxVoiceNative', tarxVoiceBridge);
 const tarxVisionBridge = {
   observe: (payload) => ipcRenderer.invoke('tarx:vision-observe', payload || {}),
 };
+const tarxPointerBridge = {
+  context: (payload) => ipcRenderer.invoke('tarx:pointer-context', payload || {}),
+};
 const tarxActionBridge = {
   propose: (payload) => ipcRenderer.invoke('tarx:action-propose', payload || {}),
 };
@@ -592,6 +595,7 @@ contextBridge.exposeInMainWorld('__TARX_DESKTOP__', {
   resetLocalVault: (payload) => ipcRenderer.invoke('tarx:vault-reset', payload),
   voice: tarxVoiceBridge,
   vision: tarxVisionBridge,
+  pointer: tarxPointerBridge,
   action: tarxActionBridge,
   localOperator: tarxLocalOperatorBridge,
   platform: process.platform,
@@ -624,6 +628,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   refreshTarx: () => ipcRenderer.invoke('tarx:refresh', { trigger: 'electron-api' }),
   voice: tarxVoiceBridge,
   vision: tarxVisionBridge,
+  pointer: tarxPointerBridge,
   action: tarxActionBridge,
   localOperator: tarxLocalOperatorBridge,
 });
