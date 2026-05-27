@@ -22,7 +22,7 @@ const requiredStates = [
   'capture_non_silent',
   'stt_route_green',
   'stt_route_failed',
-  'stt_semantic_red',
+  'stt_transcript_mismatch',
   'stt_green',
   'bridge_contracts_missing',
   'tts_missing',

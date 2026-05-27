@@ -83,7 +83,7 @@ const recentSilent = latestNativeStt
     || latestNativeStt.audioStats?.rms === 0
   )
   : latest.some((entry) => entry.attempts?.some((attempt) => attempt.audioStats?.rms === 0 && attempt.audioStats?.peakAmplitude === 0));
-const latestSemanticRed = latestNativeStt?.status === 'native_voice_stt_route_green_semantic_speech_red';
+const latestSemanticRed = latestNativeStt?.status === 'native_voice_stt_route_green_transcript_mismatch';
 const disconnectedLikely = Boolean(defaultInput && !defaultAvMatch) || recentSilent;
 const requiredSpokenPhrase = 'TARS, what are we working on today?';
 const requiredDisplayPhrase = 'TARX, what are we working on today?';

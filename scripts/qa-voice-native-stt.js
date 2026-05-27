@@ -621,7 +621,7 @@ async function main() {
 
   const result = {
     ts: new Date().toISOString(),
-    status: semanticSpeechGreen ? 'native_voice_stt_green' : (routeGreen ? 'native_voice_stt_route_green_semantic_speech_red' : 'native_voice_stt_red'),
+    status: semanticSpeechGreen ? 'native_voice_stt_green' : (routeGreen ? 'native_voice_stt_route_green_transcript_mismatch' : 'native_voice_stt_red'),
     ok: semanticSpeechGreen,
     routeGreen,
     semanticSpeechGreen,

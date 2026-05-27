@@ -743,7 +743,7 @@ function derivePrimeVoicePanelState({ capabilities, evidence }) {
   if (mediaDevicesCapture.status === 'voice_mediadevices_product_capture_green') return 'stt_green';
   if (mediaDevicesCapture.state === 'capture_no_level') return 'capture_no_level';
   if (mediaDevicesCapture.state === 'stt_route_failed') return 'stt_route_failed';
-  if (mediaDevicesCapture.state === 'stt_semantic_red') return 'stt_semantic_red';
+  if (mediaDevicesCapture.state === 'stt_transcript_mismatch') return 'stt_transcript_mismatch';
   if (!devices.length && VOICE_CAPTURE_DRIVER !== 'mediadevices') return 'no_input_devices';
   if (beta.status === 'local_voice_internal_beta_green') return 'internal_loop_ready';
   if (manualLoop.status === 'voice_manual_loop_green') return 'internal_loop_ready';
@@ -751,7 +751,7 @@ function derivePrimeVoicePanelState({ capabilities, evidence }) {
     if (stt.bridge?.installedRuntimeAcceptedContracts === false) return 'bridge_contracts_missing';
   }
   if (stt.status === 'native_voice_stt_green' && stt.semanticSpeechGreen === true) return 'stt_green';
-  if (stt.status === 'native_voice_stt_route_green_semantic_speech_red') return 'stt_semantic_red';
+  if (stt.status === 'native_voice_stt_route_green_transcript_mismatch') return 'stt_transcript_mismatch';
   if (stt.routeGreen === true) return 'stt_route_green';
   if (audio.nonSilent === true) return 'capture_non_silent';
   if (stt.firstBlocker === 'capture_silent' || audio.nonSilent === false) return 'capture_silent';
@@ -773,7 +773,7 @@ function primeVoiceNextAction(state, evidence) {
   if (state === 'capture_no_level') return 'Electron captured no useful input level. Check mic selection, mute state, and permissions.';
   if (state === 'capture_non_silent') return 'Run native STT proof with the required spoken phrase.';
   if (state === 'stt_route_failed') return 'Local Whisper route failed. Keep browser fallback off and restart local Whisper before retesting.';
-  if (state === 'stt_semantic_red') return 'Prime can capture audio, but Whisper is not detecting the required phrase. Select a different microphone in macOS Sound Input, then Refresh.';
+  if (state === 'stt_transcript_mismatch') return 'Prime can capture audio, but Whisper is not detecting the required phrase. Select a different microphone in macOS Sound Input, then Refresh.';
   if (state === 'stt_green') return 'Stop here for STT: Bridge voice endpoints and TTS playback proof must be green before full loop.';
   if (state === 'bridge_contracts_missing') return 'Bridge voice runtime endpoints are missing or returning 404; restart/update Bridge only when safe.';
   if (state === 'tts_missing') return 'Run Prime TTS playback proof; Daniel voice remains internal/unapproved.';
@@ -814,7 +814,7 @@ async function primeVoiceEvidenceSnapshot() {
       'capture_non_silent',
       'stt_route_green',
       'stt_route_failed',
-      'stt_semantic_red',
+      'stt_transcript_mismatch',
       'stt_green',
       'bridge_contracts_missing',
       'tts_missing',
@@ -1176,8 +1176,8 @@ function classifyVoiceTestFailure({ audioStats, stt, bridge, selectedDevice }) {
   if (!selectedDevice?.device) return 'no_input_devices';
   if (!audioStats?.validWav || !audioStats.nonSilent) return 'capture_silent';
   if (!stt || stt.error || stt.status === 0) return 'whisper_route_unavailable';
-  if (stt.blankAudio || !transcript) return 'stt_semantic_red';
-  if (!meaningfulVoiceTestTranscript(transcript)) return 'stt_semantic_red';
+  if (stt.blankAudio || !transcript) return 'stt_transcript_mismatch';
+  if (!meaningfulVoiceTestTranscript(transcript)) return 'stt_transcript_mismatch';
   if (bridge && bridge.ok === false) return 'bridge_contracts_missing';
   return 'stt_green';
 }
@@ -1193,7 +1193,7 @@ function nextActionForVoiceTestState(state, inventory = null) {
   if (selected && /razer kiyo pro/i.test(String(selected.name || ''))) return 'Selected input is Razer Kiyo Pro. Use a known-good mic if Whisper keeps returning non-speech or unrelated audio.';
   if (state === 'capture_silent') return 'Captured audio is silent. Check selected input, mic privacy, mute state, and macOS input meter.';
   if (state === 'whisper_route_unavailable') return 'Whisper route is unavailable. Start local Whisper on 11447 before retesting.';
-  if (state === 'stt_semantic_red') return 'Captured audio was non-silent but transcript did not match the required phrase. Listen to the WAV and retest close to the mic.';
+  if (state === 'stt_transcript_mismatch') return 'Captured audio was non-silent but transcript did not match the required phrase. Listen to the WAV and retest close to the mic.';
   if (state === 'bridge_contracts_missing') return 'Bridge voice contracts are unavailable. Restart/update Prime Bridge before full loop testing.';
   if (state === 'stt_green') return 'Native live STT passed. Bridge and TTS evidence are still required before internal loop.';
   return 'Refresh inputs, select the default input, then run a local voice check.';
@@ -1684,12 +1684,12 @@ async function runMediaDevicesProductCapture(payload = {}) {
       ? 'stt_route_failed'
       : requestCaptured
         ? 'stt_green'
-        : 'stt_semantic_red';
+        : 'stt_transcript_mismatch';
   const ok = Boolean(requestCaptured && bridgeCapture?.ok && stt?.ok);
   const firstBlocker = ok ? null
     : state === 'capture_no_level' ? 'capture_no_level'
       : state === 'stt_route_failed' ? 'stt_route_failed'
-        : 'stt_semantic_red';
+        : 'stt_transcript_mismatch';
   const result = writeMediaDevicesProductCaptureEvidence({
     ...base,
     ok,
@@ -1925,7 +1925,7 @@ async function runVoicePanelMicrophoneTest(payload = {}) {
   };
   const nativeSttEvidence = {
     ts: new Date().toISOString(),
-    status: semanticSpeechGreen ? 'native_voice_stt_green' : 'native_voice_stt_route_green_semantic_speech_red',
+    status: semanticSpeechGreen ? 'native_voice_stt_green' : 'native_voice_stt_route_green_transcript_mismatch',
     ok: semanticSpeechGreen,
     routeGreen: Boolean(stt && stt.ok),
     semanticSpeechGreen,
@@ -2602,7 +2602,7 @@ function createWindow() {
         }
         function toneForState(state) {
           if (state === 'stt_green' || state === 'internal_loop_ready' || state === 'manual_loop_green') return 'green';
-          if (state === 'stt_semantic_red' || state === 'capture_silent' || state === 'capture_no_level' || state === 'no_input_devices' || state === 'permission_needed' || state === 'device_lost' || state === 'stt_route_failed' || state === 'blocked_needs_mic_fix' || state === 'bridge_contracts_missing' || state === 'tts_missing' || state === 'tts_failed' || state === 'playback_failed') return 'red';
+          if (state === 'stt_transcript_mismatch' || state === 'capture_silent' || state === 'capture_no_level' || state === 'no_input_devices' || state === 'permission_needed' || state === 'device_lost' || state === 'stt_route_failed' || state === 'blocked_needs_mic_fix' || state === 'bridge_contracts_missing' || state === 'tts_missing' || state === 'tts_failed' || state === 'playback_failed') return 'red';
           return 'neutral';
         }
         function selectedEvidenceDevice(snapshot) {
@@ -2702,12 +2702,12 @@ function createWindow() {
                 + row('Evidence JSON', mediaDevicesProduct ? snapshot.evidence.mediaDevicesProductCapture.file : (snapshot.evidence && snapshot.evidence.nativeStt && snapshot.evidence.nativeStt.file));
             }
           }
-          var command = snapshot.commands && (state === 'stt_semantic_red' || state === 'capture_non_silent' ? snapshot.commands.nativeStt : snapshot.commands.doctor);
+          var command = snapshot.commands && (state === 'stt_transcript_mismatch' || state === 'capture_non_silent' ? snapshot.commands.nativeStt : snapshot.commands.doctor);
           if (commandNode) commandNode.textContent = operatorAction
             ? 'Ready for local voice proof. Press Start voice proof, speak the phrase, and TARX will capture locally with MediaDevices and local Whisper.'
             : 'Command execution is disabled here. Copy/run: ' + (command || 'No command available.');
           var devices = deviceReadiness && deviceReadiness.devicesAfterPermission || [];
-          if (devices.length === 1 && /razer kiyo pro/i.test(String(devices[0].label || devices[0].name || '')) && state === 'stt_semantic_red') {
+          if (devices.length === 1 && /razer kiyo pro/i.test(String(devices[0].label || devices[0].name || '')) && state === 'stt_transcript_mismatch') {
             setStatus('TARX can capture audio from Razer Kiyo Pro, but Whisper is not detecting clear speech. Select a different microphone in macOS Sound Input, then Refresh.');
           }
           if (deviceDrift) {
@@ -2945,7 +2945,7 @@ function createWindow() {
             voice.testMicrophone({ deviceId: selectedDeviceValue(), durationMs: 6500 }).then(function(result) {
               var passed = result && result.state === 'stt_green';
               setVoiceState(passed ? 'idle' : 'blocked', passed ? 'Voice' : 'Voice blocked');
-              if (stateLabel) stateLabel.textContent = result && result.state ? result.state : 'stt_semantic_red';
+              if (stateLabel) stateLabel.textContent = result && result.state ? result.state : 'stt_transcript_mismatch';
               setStatus(passed ? 'Voice proof passed locally.' : (result && result.nextAction ? result.nextAction : 'Voice proof did not pass yet.'));
               return refreshVoiceSettings();
             }).catch(function(error) {
@@ -2967,7 +2967,7 @@ function createWindow() {
           voice.testMicrophone({ deviceId: selectedDeviceValue(), durationMs: 6500 }).then(function(result) {
             var passed = result && result.state === 'stt_green';
             setVoiceState(passed ? 'idle' : 'blocked', passed ? 'Voice' : 'Voice blocked');
-            if (stateLabel) stateLabel.textContent = result && result.state ? result.state : 'stt_semantic_red';
+            if (stateLabel) stateLabel.textContent = result && result.state ? result.state : 'stt_transcript_mismatch';
             setStatus(result && result.nextAction ? result.nextAction : 'Test complete.');
             return refreshVoiceSettings();
           }).catch(function(error) {
