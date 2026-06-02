@@ -62,10 +62,37 @@ record(
   'approved checkout must contain dist/bridge.js'
 );
 record(
+  'native_dependency_declared',
+  main.includes("const REQUIRED_BRIDGE_MODULES = ['better-sqlite3-multiple-ciphers'];"),
+  'native sqlite dependency must be explicitly verified'
+);
+record(
+  'lockfile_required_before_dependency_install',
+  main.includes('bridge_runtime_lockfile_missing') && main.includes('package-lock.json'),
+  'dependency bootstrap must refuse non-lockfile installs'
+);
+record(
+  'dependency_probe_loads_native_module',
+  main.includes('probeBridgeRuntimeDependencies') && main.includes('require.resolve(name)') && main.includes('require(name)'),
+  'bootstrap must prove native dependency can be resolved and loaded'
+);
+record(
+  'dependency_bootstrap_uses_npm_ci_omit_dev',
+  main.includes("'ci'") && main.includes("'--omit=dev'") && main.includes('BRIDGE_DEPENDENCY_INSTALL_TIMEOUT_MS'),
+  'runtime dependencies should install from lockfile without dev dependencies'
+);
+record(
+  'dependency_install_failure_is_structured_hold',
+  main.includes('bridge_runtime_dependency_install_failed') && main.includes('bridge_runtime_dependencies_missing'),
+  'dependency bootstrap failures must be structured blockers'
+);
+record(
   'bootstrap_validates_distribution_before_health',
   ensureSlice.includes('const bridgeDistribution = ensureBridgeRuntimeAtApprovedSha();')
-    && ensureSlice.indexOf('ensureBridgeRuntimeAtApprovedSha') < ensureSlice.indexOf('const existing = await getRuntimeHealth'),
-  'runtime bootstrap must validate bridge source before trusting health'
+    && ensureSlice.includes('const dependencyBootstrap = ensureBridgeRuntimeDependencies(runtimeBridgeRepoPath());')
+    && ensureSlice.indexOf('ensureBridgeRuntimeAtApprovedSha') < ensureSlice.indexOf('ensureBridgeRuntimeDependencies')
+    && ensureSlice.indexOf('ensureBridgeRuntimeDependencies') < ensureSlice.indexOf('const existing = await getRuntimeHealth'),
+  'runtime bootstrap must validate bridge source and dependencies before trusting health'
 );
 record(
   'runtime_status_uses_bootstrap',
@@ -84,8 +111,8 @@ record(
   'P1'
 );
 record(
-  'candidate_version_not_bumped',
-  pkg.version === '1.1.10',
+  'candidate_version_metadata_1_1_11',
+  pkg.version === '1.1.11',
   pkg.version,
   'P1'
 );

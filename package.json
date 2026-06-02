@@ -1,6 +1,6 @@
 {
   "name": "tarx-desktop",
-  "version": "1.1.10",
+  "version": "1.1.11",
   "description": "TARX Desktop — Local AI on your hardware",
   "main": "electron/main.js",
   "scripts": {

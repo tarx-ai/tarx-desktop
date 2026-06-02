@@ -35,6 +35,8 @@ const RUNTIME_START_TIMEOUT_MS = 12_000;
 const APPROVED_BRIDGE_SHA = '71b44b0afd3c65a44b80341fdb8a955a22903396';
 const APPROVED_BRIDGE_REF = 'codex/bridge-cors-code-worker-retry-v1';
 const TARX_OPS_REPO_URL = process.env.TARX_OPS_REPO_URL || 'https://github.com/wantzjt/tarx-ops.git';
+const REQUIRED_BRIDGE_MODULES = ['better-sqlite3-multiple-ciphers'];
+const BRIDGE_DEPENDENCY_INSTALL_TIMEOUT_MS = 180_000;
 const UPDATE_CHECK_INTERVAL_MS = 60_000;
 const UPDATE_DOWNLOAD_STALL_MS = 20_000;
 const RESPONSIVE_CHROME_BREAKPOINT = 1100;
@@ -641,6 +643,27 @@ function runGit(args, { cwd = null, timeoutMs = 45_000 } = {}) {
   };
 }
 
+function runBridgeCommand(command, args, { cwd = null, timeoutMs = 45_000 } = {}) {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    env: {
+      ...process.env,
+      NPM_CONFIG_AUDIT: 'false',
+      NPM_CONFIG_FUND: 'false',
+      NPM_CONFIG_UPDATE_NOTIFIER: 'false',
+    },
+  });
+  return {
+    ok: result.status === 0,
+    status: result.status,
+    signal: result.signal || null,
+    stdout: redactBridgeText(result.stdout),
+    stderr: redactBridgeText(result.stderr || result.error?.message || ''),
+  };
+}
+
 function bridgeDistributionBase(extra = {}) {
   return {
     approved_sha: APPROVED_BRIDGE_SHA,
@@ -648,6 +671,7 @@ function bridgeDistributionBase(extra = {}) {
     repo_url: TARX_OPS_REPO_URL.replace(/https?:\/\/[^@\s]+@/, 'https://[redacted]@'),
     repo_path: runtimeBridgeRepoPath(),
     bridge_path: runtimeBridgePath(),
+    required_modules: REQUIRED_BRIDGE_MODULES,
     ...extra,
   };
 }
@@ -739,6 +763,75 @@ function ensureBridgeRuntimeAtApprovedSha() {
     installed_sha: head.stdout,
     installed,
     updated,
+  });
+}
+
+function npmPath() {
+  const node = nodePath();
+  if (node.endsWith('/bin/node')) {
+    const sibling = path.join(path.dirname(node), 'npm');
+    if (fs.existsSync(sibling)) return sibling;
+  }
+  const homebrew = '/opt/homebrew/bin/npm';
+  if (fs.existsSync(homebrew)) return homebrew;
+  const usrLocal = '/usr/local/bin/npm';
+  if (fs.existsSync(usrLocal)) return usrLocal;
+  return 'npm';
+}
+
+function probeBridgeRuntimeDependencies(repoPath) {
+  const script = [
+    "const modules = process.argv.slice(1);",
+    "for (const name of modules) require.resolve(name);",
+    "for (const name of modules) require(name);",
+    "console.log(JSON.stringify({ ok: true, modules }));",
+  ].join(' ');
+  return runBridgeCommand(nodePath(), ['-e', script, ...REQUIRED_BRIDGE_MODULES], { cwd: repoPath, timeoutMs: 30_000 });
+}
+
+function ensureBridgeRuntimeDependencies(repoPath) {
+  if (!fs.existsSync(path.join(repoPath, 'package.json'))) {
+    return bridgeDistributionHold('bridge_runtime_package_missing', 'Bridge runtime package.json is missing.');
+  }
+  if (!fs.existsSync(path.join(repoPath, 'package-lock.json'))) {
+    return bridgeDistributionHold('bridge_runtime_lockfile_missing', 'Bridge runtime package-lock.json is missing; refusing non-lockfile dependency install.');
+  }
+
+  const before = probeBridgeRuntimeDependencies(repoPath);
+  if (before.ok) {
+    return bridgeDistributionBase({
+      ok: true,
+      final_status: 'READY',
+      first_blocker: null,
+      dependencies: { status: 'present', probe: before },
+    });
+  }
+
+  const install = runBridgeCommand(npmPath(), [
+    'ci',
+    '--omit=dev',
+    '--no-audit',
+    '--no-fund',
+    '--loglevel=error',
+  ], { cwd: repoPath, timeoutMs: BRIDGE_DEPENDENCY_INSTALL_TIMEOUT_MS });
+  if (!install.ok) {
+    return bridgeDistributionHold('bridge_runtime_dependency_install_failed', 'Bridge runtime dependency install failed.', {
+      dependencies: { status: 'install_failed', probe: before, install },
+    });
+  }
+
+  const after = probeBridgeRuntimeDependencies(repoPath);
+  if (!after.ok) {
+    return bridgeDistributionHold('bridge_runtime_dependencies_missing', 'Bridge runtime dependencies are still unavailable after install.', {
+      dependencies: { status: 'missing_after_install', probe: after, install },
+    });
+  }
+
+  return bridgeDistributionBase({
+    ok: true,
+    final_status: 'READY',
+    first_blocker: null,
+    dependencies: { status: 'installed', probe: after, install },
   });
 }
 
@@ -2284,6 +2377,22 @@ async function ensureLocalRuntime() {
     return false;
   }
 
+  const dependencyBootstrap = ensureBridgeRuntimeDependencies(runtimeBridgeRepoPath());
+  const runtimeBootstrap = {
+    ...bridgeDistribution,
+    dependency_bootstrap: dependencyBootstrap.dependencies || null,
+  };
+  if (!dependencyBootstrap.ok) {
+    setRuntimeState({
+      status: 'blocked',
+      health: null,
+      error: dependencyBootstrap.error || dependencyBootstrap.first_blocker,
+      pid: null,
+      bridgeDistribution: { ...runtimeBootstrap, ...dependencyBootstrap },
+    });
+    return false;
+  }
+
   const existing = await getRuntimeHealth();
   if (existing) {
     if (bridgeDistribution.updated) {
@@ -2292,11 +2401,11 @@ async function ensureLocalRuntime() {
         health: existing,
         error: 'Bridge runtime was updated to the approved SHA; restart TARX Desktop or the local bridge so the running process reloads the approved bridge.js.',
         pid: null,
-        bridgeDistribution,
+        bridgeDistribution: runtimeBootstrap,
       });
       return false;
     }
-    setRuntimeState({ status: 'ready', health: existing, error: null, pid: null, bridgeDistribution });
+    setRuntimeState({ status: 'ready', health: existing, error: null, pid: null, bridgeDistribution: runtimeBootstrap });
     return true;
   }
 
@@ -2307,7 +2416,7 @@ async function ensureLocalRuntime() {
       health: null,
       error: `Bridge runtime not found at ${bridge}`,
       pid: null,
-      bridgeDistribution,
+      bridgeDistribution: runtimeBootstrap,
     });
     return false;
   }
@@ -2324,18 +2433,18 @@ async function ensureLocalRuntime() {
       },
     });
     child.unref();
-    setRuntimeState({ status: 'starting', health: null, error: null, pid: child.pid, bridgeDistribution });
+    setRuntimeState({ status: 'starting', health: null, error: null, pid: child.pid, bridgeDistribution: runtimeBootstrap });
   } catch (error) {
-    setRuntimeState({ status: 'error', health: null, error: error.message, pid: null, bridgeDistribution });
+    setRuntimeState({ status: 'error', health: null, error: error.message, pid: null, bridgeDistribution: runtimeBootstrap });
     return false;
   }
 
   const health = await waitForRuntime();
   if (health) {
-    setRuntimeState({ status: 'ready', health, error: null, bridgeDistribution });
+    setRuntimeState({ status: 'ready', health, error: null, bridgeDistribution: runtimeBootstrap });
     return true;
   }
-  setRuntimeState({ status: 'error', health: null, error: 'Bridge did not become healthy before timeout', bridgeDistribution });
+  setRuntimeState({ status: 'error', health: null, error: 'Bridge did not become healthy before timeout', bridgeDistribution: runtimeBootstrap });
   return false;
 }
 
