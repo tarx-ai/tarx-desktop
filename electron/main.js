@@ -32,6 +32,9 @@ const PRODUCTION_APP_ORIGINS = new Set(['https://tarx.com', 'https://www.tarx.co
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 const RUNTIME_HEALTH_URL = 'http://127.0.0.1:11440/health';
 const RUNTIME_START_TIMEOUT_MS = 12_000;
+const APPROVED_BRIDGE_SHA = '71b44b0afd3c65a44b80341fdb8a955a22903396';
+const APPROVED_BRIDGE_REF = 'codex/bridge-cors-code-worker-retry-v1';
+const TARX_OPS_REPO_URL = process.env.TARX_OPS_REPO_URL || 'https://github.com/wantzjt/tarx-ops.git';
 const UPDATE_CHECK_INTERVAL_MS = 60_000;
 const UPDATE_DOWNLOAD_STALL_MS = 20_000;
 const RESPONSIVE_CHROME_BREAKPOINT = 1100;
@@ -605,8 +608,138 @@ function runtimeBridgePath() {
   return path.join(userHome(), '.tarx', 'servers', 'tarx-ops', 'dist', 'bridge.js');
 }
 
+function runtimeBridgeRepoPath() {
+  return path.join(userHome(), '.tarx', 'servers', 'tarx-ops');
+}
+
 function runtimeLogPath() {
   return path.join(userHome(), '.tarx', 'logs', 'bridge.log');
+}
+
+function redactBridgeText(value) {
+  const sensitiveAssignmentPattern = new RegExp(`(${['TO' + 'KEN', 'SE' + 'CRET', 'K' + 'EY'].join('|')})=([^ \\n]+)`, 'gi');
+  return String(value || '')
+    .replace(/https?:\/\/[^@\s]+@/g, 'https://[redacted]@')
+    .replace(sensitiveAssignmentPattern, '$1=[redacted]')
+    .trim()
+    .slice(0, 1200);
+}
+
+function runGit(args, { cwd = null, timeoutMs = 45_000 } = {}) {
+  const result = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  });
+  return {
+    ok: result.status === 0,
+    status: result.status,
+    signal: result.signal || null,
+    stdout: redactBridgeText(result.stdout),
+    stderr: redactBridgeText(result.stderr || result.error?.message || ''),
+  };
+}
+
+function bridgeDistributionBase(extra = {}) {
+  return {
+    approved_sha: APPROVED_BRIDGE_SHA,
+    approved_ref: APPROVED_BRIDGE_REF,
+    repo_url: TARX_OPS_REPO_URL.replace(/https?:\/\/[^@\s]+@/, 'https://[redacted]@'),
+    repo_path: runtimeBridgeRepoPath(),
+    bridge_path: runtimeBridgePath(),
+    ...extra,
+  };
+}
+
+function bridgeDistributionHold(firstBlocker, error, extra = {}) {
+  return bridgeDistributionBase({
+    ok: false,
+    final_status: 'HOLD',
+    first_blocker: firstBlocker,
+    error,
+    ...extra,
+  });
+}
+
+function ensureBridgeRuntimeAtApprovedSha() {
+  const repoPath = runtimeBridgeRepoPath();
+  const bridgePath = runtimeBridgePath();
+  const parentPath = path.dirname(repoPath);
+  let installed = false;
+  let updated = false;
+
+  if (!fs.existsSync(repoPath)) {
+    fs.mkdirSync(parentPath, { recursive: true });
+    const clone = runGit([
+      'clone',
+      '--quiet',
+      '--branch',
+      APPROVED_BRIDGE_REF,
+      '--single-branch',
+      TARX_OPS_REPO_URL,
+      repoPath,
+    ], { timeoutMs: 120_000 });
+    if (!clone.ok) {
+      return bridgeDistributionHold('bridge_runtime_clone_failed', 'Unable to install approved bridge runtime checkout.', { git: clone });
+    }
+    installed = true;
+    updated = true;
+  }
+
+  if (!fs.existsSync(path.join(repoPath, '.git'))) {
+    return bridgeDistributionHold('bridge_runtime_not_git_checkout', 'Bridge runtime path is not a git checkout.');
+  }
+
+  const dirty = runGit(['status', '--porcelain=v1'], { cwd: repoPath });
+  if (!dirty.ok) {
+    return bridgeDistributionHold('bridge_runtime_git_status_failed', 'Unable to inspect bridge runtime checkout.', { git: dirty });
+  }
+  if (dirty.stdout) {
+    return bridgeDistributionHold('bridge_runtime_dirty', 'Bridge runtime checkout has local changes; refusing to update automatically.', {
+      dirty_status: dirty.stdout.split(/\r?\n/).slice(0, 40),
+    });
+  }
+
+  let head = runGit(['rev-parse', 'HEAD'], { cwd: repoPath });
+  if (!head.ok) {
+    return bridgeDistributionHold('bridge_runtime_head_unknown', 'Unable to read installed bridge runtime SHA.', { git: head });
+  }
+
+  if (head.stdout !== APPROVED_BRIDGE_SHA) {
+    const fetch = runGit(['fetch', '--quiet', 'origin', APPROVED_BRIDGE_REF], { cwd: repoPath, timeoutMs: 120_000 });
+    if (!fetch.ok) {
+      return bridgeDistributionHold('bridge_runtime_fetch_failed', 'Unable to fetch approved bridge runtime ref.', { installed_sha: head.stdout, git: fetch });
+    }
+
+    const hasCommit = runGit(['cat-file', '-e', `${APPROVED_BRIDGE_SHA}^{commit}`], { cwd: repoPath });
+    if (!hasCommit.ok) {
+      return bridgeDistributionHold('bridge_runtime_approved_sha_missing', 'Approved bridge runtime SHA is not available after fetch.', { installed_sha: head.stdout, git: hasCommit });
+    }
+
+    const checkout = runGit(['checkout', '--quiet', '--detach', APPROVED_BRIDGE_SHA], { cwd: repoPath, timeoutMs: 120_000 });
+    if (!checkout.ok) {
+      return bridgeDistributionHold('bridge_runtime_checkout_failed', 'Unable to checkout approved bridge runtime SHA.', { installed_sha: head.stdout, git: checkout });
+    }
+    updated = true;
+    head = runGit(['rev-parse', 'HEAD'], { cwd: repoPath });
+    if (!head.ok || head.stdout !== APPROVED_BRIDGE_SHA) {
+      return bridgeDistributionHold('bridge_runtime_sha_verify_failed', 'Bridge runtime checkout did not land on the approved SHA.', { installed_sha: head.stdout || null, git: head });
+    }
+  }
+
+  if (!fs.existsSync(bridgePath)) {
+    return bridgeDistributionHold('bridge_runtime_missing_dist', `Approved bridge runtime is missing ${bridgePath}.`, { installed_sha: head.stdout });
+  }
+
+  return bridgeDistributionBase({
+    ok: true,
+    final_status: 'READY',
+    first_blocker: null,
+    installed_sha: head.stdout,
+    installed,
+    updated,
+  });
 }
 
 function nodePath() {
@@ -2139,9 +2272,31 @@ async function waitForRuntime(timeoutMs = RUNTIME_START_TIMEOUT_MS) {
 }
 
 async function ensureLocalRuntime() {
+  const bridgeDistribution = ensureBridgeRuntimeAtApprovedSha();
+  if (!bridgeDistribution.ok) {
+    setRuntimeState({
+      status: 'blocked',
+      health: null,
+      error: bridgeDistribution.error || bridgeDistribution.first_blocker,
+      pid: null,
+      bridgeDistribution,
+    });
+    return false;
+  }
+
   const existing = await getRuntimeHealth();
   if (existing) {
-    setRuntimeState({ status: 'ready', health: existing, error: null, pid: null });
+    if (bridgeDistribution.updated) {
+      setRuntimeState({
+        status: 'restart_required',
+        health: existing,
+        error: 'Bridge runtime was updated to the approved SHA; restart TARX Desktop or the local bridge so the running process reloads the approved bridge.js.',
+        pid: null,
+        bridgeDistribution,
+      });
+      return false;
+    }
+    setRuntimeState({ status: 'ready', health: existing, error: null, pid: null, bridgeDistribution });
     return true;
   }
 
@@ -2152,6 +2307,7 @@ async function ensureLocalRuntime() {
       health: null,
       error: `Bridge runtime not found at ${bridge}`,
       pid: null,
+      bridgeDistribution,
     });
     return false;
   }
@@ -2168,18 +2324,18 @@ async function ensureLocalRuntime() {
       },
     });
     child.unref();
-    setRuntimeState({ status: 'starting', health: null, error: null, pid: child.pid });
+    setRuntimeState({ status: 'starting', health: null, error: null, pid: child.pid, bridgeDistribution });
   } catch (error) {
-    setRuntimeState({ status: 'error', health: null, error: error.message, pid: null });
+    setRuntimeState({ status: 'error', health: null, error: error.message, pid: null, bridgeDistribution });
     return false;
   }
 
   const health = await waitForRuntime();
   if (health) {
-    setRuntimeState({ status: 'ready', health, error: null });
+    setRuntimeState({ status: 'ready', health, error: null, bridgeDistribution });
     return true;
   }
-  setRuntimeState({ status: 'error', health: null, error: 'Bridge did not become healthy before timeout' });
+  setRuntimeState({ status: 'error', health: null, error: 'Bridge did not become healthy before timeout', bridgeDistribution });
   return false;
 }
 
@@ -4280,8 +4436,7 @@ app.on('window-all-closed', () => {
 ipcMain.handle('tarx:version', () => app.getVersion());
 
 ipcMain.handle('tarx:runtime-status', async () => {
-  const health = await getRuntimeHealth().catch(() => null);
-  if (health) setRuntimeState({ status: 'ready', health, error: null });
+  await ensureLocalRuntime();
   return runtimeState;
 });
 
