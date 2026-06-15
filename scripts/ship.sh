@@ -19,6 +19,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
+if [[ -n "${TARX_RELEASE_NODE_BIN:-}" ]]; then
+  export PATH="$(dirname "$TARX_RELEASE_NODE_BIN"):$PATH"
+elif [[ -x "/opt/homebrew/opt/node@22/bin/node" ]]; then
+  export PATH="/opt/homebrew/opt/node@22/bin:$PATH"
+fi
+
+NODE_MAJOR="$(node -p "process.versions.node.split('.')[0]")"
+if [[ "$NODE_MAJOR" -gt 22 ]]; then
+  echo "✗ TARX Electron release builds require Node <= 22; found $(node -v). Set TARX_RELEASE_NODE_BIN or install node@22." >&2
+  exit 1
+fi
+
+resolve_default_web_root() {
+  local candidate=""
+  for candidate in \
+    "$ROOT/../tarx-web" \
+    "$ROOT/../../tarx-web" \
+    "$ROOT/../tarx-web-coord-operator" \
+    "$ROOT/../../Worktrees/tarx-web-coord-operator"
+  do
+    if [[ -d "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
 PUBLISH=false
 SKIP_BUILD=false
 for arg in "$@"; do
@@ -27,6 +55,98 @@ for arg in "$@"; do
     --skip-build) SKIP_BUILD=true ;;
   esac
 done
+
+find_tool() {
+  local pattern="$1"
+  local tool
+  while IFS= read -r tool; do
+    if [[ -x "$tool" ]]; then
+      printf '%s' "$tool"
+      return 0
+    fi
+  done < <(find node_modules -path "$pattern" -type f 2>/dev/null | sort)
+  if [[ -z "${tool:-}" ]]; then
+    echo "✗ Missing required release helper matching $pattern. Run npm install." >&2
+  else
+    echo "✗ Release helper is not executable: $tool" >&2
+  fi
+  exit 1
+}
+
+rebuild_updater_zip_if_needed() {
+  local version="$1"
+  local app_dir="dist/mac-arm64/TARX.app"
+  local zip="dist/TARX-${version}-arm64-mac.zip"
+  local blockmap="${zip}.blockmap"
+
+  if [[ ! -d "$app_dir" ]]; then
+    echo "✗ Cannot rebuild updater ZIP; missing $app_dir." >&2
+    exit 1
+  fi
+
+  local seven_zip
+  local app_builder
+  if [[ "$(uname -m)" == "arm64" ]]; then
+    seven_zip="node_modules/7zip-bin/mac/arm64/7za"
+    app_builder="node_modules/app-builder-bin/mac/app-builder_arm64"
+  else
+    seven_zip="node_modules/7zip-bin/mac/x64/7za"
+    app_builder="node_modules/app-builder-bin/mac/app-builder_amd64"
+  fi
+  [[ -x "$seven_zip" ]] || seven_zip="$(find_tool '*/7zip-bin/mac/*/7za')"
+  [[ -x "$app_builder" ]] || app_builder="$(find_tool '*/app-builder-bin/mac/app-builder*')"
+
+  echo "▶ Rebuilding updater ZIP with TARX.app at archive root…"
+  rm -f "$zip" "$blockmap"
+  (
+    cd dist/mac-arm64
+    if ! "../../$seven_zip" a -bd -mx=7 -mtc=off -mm=Deflate -mcu "../TARX-${version}-arm64-mac.zip" TARX.app; then
+      echo "⚠ 7za updater ZIP failed; falling back to ditto." >&2
+      rm -f "../TARX-${version}-arm64-mac.zip"
+      ditto -c -k --sequesterRsrc --keepParent TARX.app "../TARX-${version}-arm64-mac.zip"
+    fi
+  )
+  "$app_builder" blockmap --input "$zip" --output "$blockmap"
+
+  local first_zip_entry
+  first_zip_entry="$(zipinfo -1 "$zip" | sed -n '1p' || true)"
+  if [[ "$first_zip_entry" != TARX.app/* ]]; then
+    echo "✗ Updater ZIP root must be TARX.app/." >&2
+    exit 1
+  fi
+}
+
+ensure_notarization_credentials() {
+  if [[ "${APPLE_SKIP_NOTARIZE:-}" == "1" ]]; then
+    if [[ "$PUBLISH" == true ]]; then
+      echo "✗ APPLE_SKIP_NOTARIZE=1 is not allowed in the publish lane. Provide notarization credentials or stop." >&2
+      exit 1
+    fi
+    return 0
+  fi
+
+  local credential_modes=0
+  [[ -n "${APPLE_API_KEY:-}" || -n "${APPLE_API_KEY_ID:-}" ]] && credential_modes=$((credential_modes + 1))
+  [[ -n "${APPLE_KEYCHAIN_PROFILE:-}" ]] && credential_modes=$((credential_modes + 1))
+  [[ -n "${APPLE_ID:-}" || -n "${APPLE_APP_PASSWORD:-}" || -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]] && credential_modes=$((credential_modes + 1))
+
+  if [[ "$credential_modes" -eq 0 ]]; then
+    echo "✗ Missing notarization credentials. Set APPLE_API_KEY/APPLE_API_KEY_ID, APPLE_KEYCHAIN_PROFILE, or APPLE_ID/APPLE_APP_PASSWORD." >&2
+    exit 1
+  fi
+
+  if [[ "$credential_modes" -ne 1 ]]; then
+    echo "✗ Choose exactly one notarization credential mode: APPLE_API_KEY/APPLE_API_KEY_ID, APPLE_KEYCHAIN_PROFILE, or APPLE_ID/APPLE_APP_PASSWORD." >&2
+    exit 1
+  fi
+
+  if [[ -n "${APPLE_KEYCHAIN_PROFILE:-}" ]]; then
+    if ! security find-generic-password -s "$APPLE_KEYCHAIN_PROFILE" -w >/dev/null 2>&1; then
+      echo "✗ No Keychain password item found for profile: $APPLE_KEYCHAIN_PROFILE. Configure notarytool credentials before release." >&2
+      exit 1
+    fi
+  fi
+}
 
 # ── 1. Env checks ─────────────────────────────────────────────────────────────
 APPLE_TEAM_ID="${APPLE_TEAM_ID:-JH4243GARF}"
@@ -70,6 +190,8 @@ if [[ "$HAS_APPLE_ID" == true && ( -z "${APPLE_ID:-}" || ( -z "${APPLE_APP_PASSW
   exit 1
 fi
 
+ensure_notarization_credentials
+
 VERSION=$(node -p "require('./package.json').version")
 echo "▶ TARX Electron v${VERSION}"
 
@@ -81,12 +203,14 @@ fi
 
 # ── 3. Build ──────────────────────────────────────────────────────────────────
 if [[ "$SKIP_BUILD" == false ]]; then
-  echo "▶ Building mac updater artifacts (DMG + ZIP)…"
-  npm run build -- --mac dmg zip
+  echo "▶ Building mac app + DMG with electron-builder…"
+  node scripts/build-assets.js
+  node node_modules/electron-builder/cli.js --mac dmg --publish never
+  rebuild_updater_zip_if_needed "$VERSION"
 
   echo "▶ Signing check…"
-  ARM64_DMG=$(ls dist/TARX-*-arm64.dmg 2>/dev/null | head -1)
-  X64_DMG=$(ls dist/TARX-*-x64.dmg 2>/dev/null | head -1)
+  ARM64_DMG=$(ls "dist/TARX-${VERSION}"-*-arm64.dmg 2>/dev/null | head -1 || true)
+  X64_DMG=$(ls "dist/TARX-${VERSION}"-*-x64.dmg 2>/dev/null | head -1 || true)
 
   if [[ -z "$ARM64_DMG" && -z "$X64_DMG" ]]; then
     echo "✗ No DMG found in dist/. Build failed." >&2
@@ -110,7 +234,12 @@ if [[ "$SKIP_BUILD" == false ]]; then
     hdiutil detach "$MNT" -quiet
     rmdir "$MNT" 2>/dev/null || true
   done
+else
+  rebuild_updater_zip_if_needed "$VERSION"
 fi
+
+echo "▶ Verifying native dependency packaging across shipped app bundles…"
+node scripts/qa-electron-native-packaging.js
 
 # ── 3b. DMG notarization ──────────────────────────────────────────────────────
 DMGS=()
@@ -133,9 +262,10 @@ fi
 
 # ── 4. Publish ────────────────────────────────────────────────────────────────
 if [[ "$PUBLISH" == true ]]; then
-  WEB_ROOT="${TARX_WEB_ROOT:-/Users/master/Desktop/tarx-web}"
-  if [[ ! -d "$WEB_ROOT" ]]; then
-    echo "✗ TARX web repo not found at $WEB_ROOT. Set TARX_WEB_ROOT." >&2
+  DEFAULT_WEB_ROOT="$(resolve_default_web_root || true)"
+  WEB_ROOT="${TARX_WEB_ROOT:-$DEFAULT_WEB_ROOT}"
+  if [[ -z "$WEB_ROOT" || ! -d "$WEB_ROOT" ]]; then
+    echo "✗ TARX web repo not found. Set TARX_WEB_ROOT or place tarx-web next to tarx-electron." >&2
     exit 1
   fi
 

@@ -1,6 +1,6 @@
 {
   "name": "tarx-desktop",
-  "version": "1.1.9",
+  "version": "1.1.13",
   "description": "TARX Desktop — Local AI on your hardware",
   "main": "electron/main.js",
   "scripts": {
@@ -14,6 +14,7 @@
     "fresh-app-test": "node scripts/local-data.js fresh-app-test",
     "build:voice-beta": "electron-builder --mac --config build/electron-builder.voice-beta.yml",
     "qa:voice-beta-package-contract": "node scripts/qa-voice-beta-package-contract.js",
+    "qa:electron-native-packaging:test": "node --test scripts/qa-electron-native-packaging.test.js",
     "qa:native-voice-capture-contract": "node scripts/qa-native-voice-capture-contract.js",
     "qa:native-capture-adapter": "node scripts/qa-native-capture-adapter-availability.js",
     "qa:native-capture-stt-route": "node scripts/qa-native-capture-stt-route.js",
@@ -45,7 +46,9 @@
     "qa:runtime-spine-performance": "node scripts/qa-runtime-spine-performance.js",
     "qa:runtime-spine-readiness": "node scripts/qa-runtime-spine-readiness.js",
     "qa:electron-black-screen-recovery": "node scripts/qa-electron-black-screen-recovery.js",
+    "qa:electron-native-packaging": "node scripts/qa-electron-native-packaging.js",
     "qa:electron-release-stability": "node scripts/qa-electron-release-stability.js",
+    "qa:g3-daemon-first-funnel": "node scripts/qa-g3-daemon-first-funnel.js",
     "qa:electron-navigation-boundary": "node scripts/qa-electron-navigation-boundary.js"
   },
   "author": "TARXAN INC.",
@@ -58,20 +61,62 @@
   "build": {
     "appId": "com.tarxan.tarx",
     "productName": "TARX",
+    "npmRebuild": false,
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "assets/icon.icns",
-      "hardenedRuntime": true,
-      "identity": "John Wantz (JH4243GARF)",
+    "hardenedRuntime": true,
+    "identity": "John Wantz (JH4243GARF)",
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "TARX uses the microphone for voice input so you can speak instead of type."
-      }
-    },
-    "files": [
-      "electron/**",
-      "assets/**",
+      "NSMicrophoneUsageDescription": "TARX uses the microphone for voice input so you can speak instead of type."
+    }
+  },
+  "asarUnpack": [
+    "node_modules/better-sqlite3-multiple-ciphers/**",
+    "node_modules/bindings/**",
+    "node_modules/prebuild-install/**",
+    "node_modules/base64-js/**",
+    "node_modules/bl/**",
+    "node_modules/buffer/**",
+    "node_modules/chownr/**",
+    "node_modules/decompress-response/**",
+    "node_modules/deep-extend/**",
+    "node_modules/detect-libc/**",
+    "node_modules/end-of-stream/**",
+    "node_modules/expand-template/**",
+    "node_modules/file-uri-to-path/**",
+    "node_modules/fs-constants/**",
+    "node_modules/github-from-package/**",
+    "node_modules/ieee754/**",
+    "node_modules/inherits/**",
+    "node_modules/ini/**",
+    "node_modules/mimic-response/**",
+    "node_modules/minimist/**",
+    "node_modules/mkdirp-classic/**",
+    "node_modules/napi-build-utils/**",
+    "node_modules/node-abi/**",
+    "node_modules/once/**",
+    "node_modules/pump/**",
+    "node_modules/rc/**",
+    "node_modules/readable-stream/**",
+    "node_modules/safe-buffer/**",
+    "node_modules/semver/**",
+    "node_modules/simple-concat/**",
+    "node_modules/simple-get/**",
+    "node_modules/string_decoder/**",
+    "node_modules/strip-json-comments/**",
+    "node_modules/tar-fs/**",
+    "node_modules/tar-stream/**",
+    "node_modules/tunnel-agent/**",
+    "node_modules/util-deprecate/**",
+    "node_modules/wrappy/**"
+  ],
+  "files": [
+    "electron/**",
+    "assets/**",
+    "resources/bridge/**",
       "resources/local-operator-packs.json",
       "package.json",
       "node_modules/**",
@@ -124,6 +169,7 @@
     }
   },
   "dependencies": {
+    "better-sqlite3-multiple-ciphers": "^12.9.0",
     "electron-updater": "^6.8.3"
   }
 }
