@@ -83,7 +83,7 @@ record(
 
 const failed = checks.filter((check) => !check.pass);
 const result = {
-  schema: 'tarx-electron-navigation-boundary-qa.v1',
+  schema: 'tarx-desktop-navigation-boundary-qa.v1',
   generated_at: new Date().toISOString(),
   ok: failed.length === 0,
   status: failed.length === 0 ? 'electron_navigation_boundary_green' : 'electron_navigation_boundary_red',
