@@ -162,11 +162,22 @@ function isHandledDeepLinkUrl(url) {
 
 function rememberAllowedAppUrl(url) {
   if (!isAllowedAppUrl(url)) return;
+  // Never persist site root as the product entry — Screens / 307s to marketing /home.
+  const parsed = parseUrl(url);
+  if (parsed && (parsed.pathname === '/' || parsed.pathname === '' || parsed.pathname === '/home')) {
+    lastAllowedAppUrl = appEntryUrl(`${parsed.origin}`);
+    return;
+  }
   lastAllowedAppUrl = url;
 }
 
 function safeAppFallbackUrl() {
-  return isAllowedAppUrl(lastAllowedAppUrl) ? lastAllowedAppUrl : appEntryUrl(PRIMARY_URL);
+  if (!isAllowedAppUrl(lastAllowedAppUrl)) return appEntryUrl(PRIMARY_URL);
+  const parsed = parseUrl(lastAllowedAppUrl);
+  if (parsed && (parsed.pathname === '/' || parsed.pathname === '' || parsed.pathname === '/home')) {
+    return appEntryUrl(parsed.origin);
+  }
+  return lastAllowedAppUrl;
 }
 
 function openExternalUrl(url, source = 'external') {
@@ -427,7 +438,8 @@ function loadRouteWithRecovery(url, reason) {
 
 function refreshTarx(trigger = 'manual') {
   if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, reason: 'main_window_unavailable' };
-  previousRouteBeforeRefresh = currentWebContentsUrl() || lastRouteAttempted || currentUrl || PRIMARY_URL;
+  // Prefer live URL; never fall back to site root (→ /home). Use agentic entry.
+  previousRouteBeforeRefresh = currentWebContentsUrl() || lastRouteAttempted || appEntryUrl(currentUrl || PRIMARY_URL);
   lastRefreshState = {
     ts: new Date().toISOString(),
     trigger,
@@ -3499,7 +3511,7 @@ function handleLoadFailure(errorCode = null, errorDesc = '', validatedUrl = '') 
       if (ok) {
         currentUrl = FALLBACK_URL;
         trayManager?.setStatus('local');
-        loadRouteWithRecovery(FALLBACK_URL, 'primary_failed_fallback');
+        loadRouteWithRecovery(appEntryUrl(FALLBACK_URL), 'primary_failed_fallback');
       } else {
         trayManager?.setStatus('offline');
         showSafeShell('load_failed_no_fallback', { errorCode, errorDesc, route: validatedUrl });

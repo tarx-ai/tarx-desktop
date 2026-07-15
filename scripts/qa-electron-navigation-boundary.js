@@ -65,8 +65,9 @@ record(
 record(
   'no_legacy_home_entry_default',
   !main.includes("lastAllowedAppUrl = 'https://tarx.com/home'") &&
-    !main.includes("return isAllowedAppUrl(lastAllowedAppUrl) ? lastAllowedAppUrl : 'https://tarx.com/home'"),
-  'legacy /home must not be the Desktop fallback entry'
+    !main.includes("return isAllowedAppUrl(lastAllowedAppUrl) ? lastAllowedAppUrl : 'https://tarx.com/home'") &&
+    main.includes("parsed.pathname === '/home'"),
+  'legacy /home must not be the Desktop fallback entry; root//home remapped to APP_ENTRY'
 );
 record(
   'auth_callback_lands_on_chat',
