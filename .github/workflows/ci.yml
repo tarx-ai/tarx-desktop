@@ -1,0 +1,83 @@
+# TARX Desktop (tarx-electron) — package contract CI
+# Public product name: TARX Desktop. Voice production stays closed.
+
+name: Desktop CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+      - 'codex/**'
+      - 'feat/**'
+  workflow_dispatch:
+
+concurrency:
+  group: tarx-desktop-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Package + preload contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Preload exposes Desktop + Electron flags
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = fs.readFileSync("electron/preload.js", "utf8");
+            const need = [
+              "__TARX_DESKTOP__",
+              "__TARX_ELECTRON__",
+              "isElectron: true",
+              "chatStreamContract",
+              "agenticTools",
+            ];
+            for (const n of need) {
+              if (!p.includes(n)) {
+                console.error("MISSING", n);
+                process.exit(1);
+              }
+            }
+            console.log("preload contract PASS");
+          '
+
+      - name: Syntax-check main + preload
+        run: |
+          node --check electron/main.js
+          node --check electron/preload.js
+
+      - name: Package name is tarx-desktop
+        run: |
+          node -e '
+            const p = require("./package.json");
+            if (p.name !== "tarx-desktop") process.exit(1);
+            console.log("name", p.name, "version", p.version);
+          '
+
+  agent-checklist:
+    name: Agent orchestration note
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cat <<'EOF'
+          TARX Desktop agent rule:
+            branch → PR → CI green → authorize production → release
+          Do not open production voice without explicit authorize.
+          Chat agentic loop lives in tarx-web (stream + executeToolCalls).
+          EOF

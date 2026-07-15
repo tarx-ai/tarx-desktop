@@ -1,7 +1,7 @@
 {
   "name": "tarx-desktop",
   "version": "1.1.11",
-  "description": "TARX Desktop — Local AI on your hardware",
+  "description": "TARX Desktop \u2014 Local AI on your hardware",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
@@ -125,5 +125,9 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.3"
-  }
+  },
+  "engines": {
+    "node": ">=20 <23"
+  },
+  "packageManager": "npm@10.9.2"
 }

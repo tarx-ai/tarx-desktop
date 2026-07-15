@@ -578,7 +578,12 @@ const tarxLocalOperatorBridge = {
   runCheck: () => ipcRenderer.invoke('tarx:local-operator-control-plane'),
 };
 
-// Expose a minimal TARX bridge to the renderer (tarx.com web app)
+// Expose a minimal TARX bridge to the renderer (tarx.com / local Screens).
+// Web chat agentic loop (streamTarxFromBrowser + executeToolCalls) runs in the
+// page itself — Desktop must not re-implement tools here. Flags mark the shell.
+contextBridge.exposeInMainWorld('__TARX_ELECTRON__', true)
+contextBridge.exposeInMainWorld('__TARX_ELECTRON', true) // legacy typo-compat (MessageInput)
+
 contextBridge.exposeInMainWorld('__TARX_DESKTOP__', {
   getStatus: () => ipcRenderer.invoke('tarx:status'),
   openComposer: () => ipcRenderer.invoke('open-composer'),
@@ -597,6 +602,9 @@ contextBridge.exposeInMainWorld('__TARX_DESKTOP__', {
   platform: process.platform,
   arch: process.arch,
   isElectron: true,
+  // Screens contract: same chat stream + TOOL_CALL path as web (no dual client)
+  chatStreamContract: 'web-shared-v1',
+  agenticTools: 'page-executeToolCalls',
   // Update flow
   checkForUpdates: () => ipcRenderer.invoke('tarx:check-for-updates'),
   downloadUpdate: () => ipcRenderer.invoke('tarx:download-update'),
