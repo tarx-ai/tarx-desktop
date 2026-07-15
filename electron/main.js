@@ -25,10 +25,19 @@ function packagedTarxDesktopUrl() {
 }
 
 // URLs — default to tarx.com, but allow signed beta/dev apps without shipping Voice to prod.
+// Desktop product surface is the agentic chat contract (/chat), not marketing /home.
 const PRIMARY_URL = process.env.TARX_DESKTOP_URL || process.env.TARX_VOICE_BETA_DESKTOP_URL || packagedTarxDesktopUrl() || 'https://tarx.com';
+const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/chat';
 const FALLBACK_PORTS = [11440, 11441];
 const FALLBACK_URL = 'http://localhost:11440'; // Updated dynamically
 const PRODUCTION_APP_ORIGINS = new Set(['https://tarx.com', 'https://www.tarx.com']);
+
+/** Resolve the primary product route for a Screens base origin. */
+function appEntryUrl(base = PRIMARY_URL) {
+  const origin = String(base || PRIMARY_URL).replace(/\/$/, '');
+  const entry = APP_ENTRY_PATH.startsWith('/') ? APP_ENTRY_PATH : `/${APP_ENTRY_PATH}`;
+  return `${origin}${entry}`;
+}
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 const RUNTIME_HEALTH_URL = 'http://127.0.0.1:11440/health';
 const RUNTIME_START_TIMEOUT_MS = 12_000;
@@ -116,7 +125,7 @@ let previousRouteBeforeRefresh = null;
 let lastRefreshState = null;
 let firstRendererError = null;
 let safeShellVisible = false;
-let lastAllowedAppUrl = 'https://tarx.com/home';
+let lastAllowedAppUrl = appEntryUrl(PRIMARY_URL);
 
 function parseUrl(value) {
   try {
@@ -153,11 +162,22 @@ function isHandledDeepLinkUrl(url) {
 
 function rememberAllowedAppUrl(url) {
   if (!isAllowedAppUrl(url)) return;
+  // Never persist site root as the product entry — Screens / 307s to marketing /home.
+  const parsed = parseUrl(url);
+  if (parsed && (parsed.pathname === '/' || parsed.pathname === '' || parsed.pathname === '/home')) {
+    lastAllowedAppUrl = appEntryUrl(`${parsed.origin}`);
+    return;
+  }
   lastAllowedAppUrl = url;
 }
 
 function safeAppFallbackUrl() {
-  return isAllowedAppUrl(lastAllowedAppUrl) ? lastAllowedAppUrl : 'https://tarx.com/home';
+  if (!isAllowedAppUrl(lastAllowedAppUrl)) return appEntryUrl(PRIMARY_URL);
+  const parsed = parseUrl(lastAllowedAppUrl);
+  if (parsed && (parsed.pathname === '/' || parsed.pathname === '' || parsed.pathname === '/home')) {
+    return appEntryUrl(parsed.origin);
+  }
+  return lastAllowedAppUrl;
 }
 
 function openExternalUrl(url, source = 'external') {
@@ -418,7 +438,8 @@ function loadRouteWithRecovery(url, reason) {
 
 function refreshTarx(trigger = 'manual') {
   if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, reason: 'main_window_unavailable' };
-  previousRouteBeforeRefresh = currentWebContentsUrl() || lastRouteAttempted || currentUrl || PRIMARY_URL;
+  // Prefer live URL; never fall back to site root (→ /home). Use agentic entry.
+  previousRouteBeforeRefresh = currentWebContentsUrl() || lastRouteAttempted || appEntryUrl(currentUrl || PRIMARY_URL);
   lastRefreshState = {
     ts: new Date().toISOString(),
     trigger,
@@ -3463,7 +3484,8 @@ async function loadBestUrl() {
     currentUrl = PRIMARY_URL;
     isOnline = true;
     trayManager?.setStatus('online');
-    loadRouteWithRecovery(PRIMARY_URL, 'load_best_primary');
+    // Always open agentic chat — root / redirects to legacy /home on Screens.
+    loadRouteWithRecovery(appEntryUrl(PRIMARY_URL), 'load_best_primary');
     return;
   }
 
@@ -3472,7 +3494,7 @@ async function loadBestUrl() {
     currentUrl = FALLBACK_URL;
     isOnline = false;
     trayManager?.setStatus('local');
-    loadRouteWithRecovery(FALLBACK_URL, 'load_best_fallback');
+    loadRouteWithRecovery(appEntryUrl(FALLBACK_URL), 'load_best_fallback');
     return;
   }
 
@@ -3489,7 +3511,7 @@ function handleLoadFailure(errorCode = null, errorDesc = '', validatedUrl = '') 
       if (ok) {
         currentUrl = FALLBACK_URL;
         trayManager?.setStatus('local');
-        loadRouteWithRecovery(FALLBACK_URL, 'primary_failed_fallback');
+        loadRouteWithRecovery(appEntryUrl(FALLBACK_URL), 'primary_failed_fallback');
       } else {
         trayManager?.setStatus('offline');
         showSafeShell('load_failed_no_fallback', { errorCode, errorDesc, route: validatedUrl });
@@ -3554,10 +3576,8 @@ function openComposerWindow() {
     },
   });
 
-  // Load tarx.com/chat in the composer — just the chat interface
-  const composerURL = currentUrl === FALLBACK_URL
-    ? `${FALLBACK_URL}/chat`
-    : `${PRIMARY_URL}/chat`;
+  // Load agentic chat in the composer — same entry as main window
+  const composerURL = appEntryUrl(currentUrl === FALLBACK_URL ? FALLBACK_URL : PRIMARY_URL);
   composerWindow.loadURL(composerURL);
 
   // Inject glassmorphic styling once loaded
@@ -3888,11 +3908,11 @@ function startHealthLoop() {
     const primary = await probe(PRIMARY_URL + '/api/version', true);
 
     if (primary && currentUrl !== PRIMARY_URL) {
-      // Came back online — reload primary
+      // Came back online — reload primary agentic chat surface
       currentUrl = PRIMARY_URL;
       isOnline = true;
       trayManager?.setStatus('online');
-      loadRouteWithRecovery(PRIMARY_URL, 'health_loop_primary_restored');
+      loadRouteWithRecovery(appEntryUrl(PRIMARY_URL), 'health_loop_primary_restored');
       return;
     }
 
@@ -4127,7 +4147,7 @@ ipcMain.handle('tarx:safe-shell-open-logs', async () => {
 });
 
 ipcMain.handle('tarx:safe-shell-reload', () => {
-  const target = previousRouteBeforeRefresh || lastRouteAttempted || PRIMARY_URL;
+  const target = previousRouteBeforeRefresh || lastRouteAttempted || appEntryUrl(PRIMARY_URL);
   safeShellVisible = false;
   firstRendererError = null;
   loadRouteWithRecovery(target, 'safe_shell_reload');
@@ -4477,20 +4497,21 @@ function handleDeepLink(url) {
     const params = parsed.search; // e.g., ?token=X&email=Y
 
     if (fullPath.startsWith('/auth/callback')) {
-      // Redirect to Auth.js callback with the token, redirecting to / after auth
-      const webUrl = `${PRIMARY_URL}/api/auth/callback/resend${params}&callbackUrl=%2F`;
+      // Redirect to Auth.js callback with the token, then land on agentic /chat.
+      const entryCallback = encodeURIComponent(APP_ENTRY_PATH);
+      const webUrl = `${PRIMARY_URL}/api/auth/callback/resend${params}&callbackUrl=${entryCallback}`;
 
       if (mainWindow) {
         mainWindow.show();
         mainWindow.focus();
         loadRouteWithRecovery(webUrl, 'deep_link_auth');
 
-        // After auth callback processes, always navigate to home.
+        // After auth callback processes, always navigate to chat entry.
         // Auth.js sometimes lands on /settings or /login?error= — override both.
         mainWindow.webContents.once('did-finish-load', () => {
           const finalUrl = mainWindow.webContents.getURL();
           if (finalUrl.includes('/login?error=') || finalUrl.includes('/settings') || finalUrl.includes('/api/auth')) {
-            loadRouteWithRecovery(PRIMARY_URL, 'deep_link_auth_home');
+            loadRouteWithRecovery(appEntryUrl(PRIMARY_URL), 'deep_link_auth_entry');
           }
         });
       }
