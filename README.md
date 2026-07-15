@@ -51,13 +51,18 @@ See [docs.tarx.com](https://docs.tarx.com) for install and operations.
 └─────────────────────────────────────────────┘
 ```
 
+**Desktop entry:** Electron loads `APP_ENTRY_PATH` (`/chat` by default), not site root.  
+(`https://tarx.com/` still 307s to marketing `/home` on Screens — Desktop deliberately bypasses that.)
+
+Override with `TARX_DESKTOP_ENTRY` or `TARX_DESKTOP_URL` when needed.
+
 Core principles:
 
 - **Local-first** by default
 - **Portable** across planes
 - **Sovereign** — you control data, models, providers, and policy
 - **Operational** — self-healing, evidence-based, observable
-- **One chat contract** — Desktop does not reimplement agentic loops; Screens page owns `streamTarxFromBrowser` + `executeToolCalls`
+- **One chat contract** — Desktop does not reimplement agentic loops; Screens `/chat` owns `streamTarxFromBrowser` + `executeToolCalls`
 
 ## Current Maturity
 

@@ -56,6 +56,24 @@ record(
   'magic-link auth callback must remain handled'
 );
 record(
+  'desktop_entry_is_agentic_chat',
+  main.includes("const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/chat'") &&
+    main.includes('function appEntryUrl') &&
+    main.includes('loadRouteWithRecovery(appEntryUrl(PRIMARY_URL), \'load_best_primary\')'),
+  'Desktop must boot into /chat (agentic contract), not root → /home'
+);
+record(
+  'no_legacy_home_entry_default',
+  !main.includes("lastAllowedAppUrl = 'https://tarx.com/home'") &&
+    !main.includes("return isAllowedAppUrl(lastAllowedAppUrl) ? lastAllowedAppUrl : 'https://tarx.com/home'"),
+  'legacy /home must not be the Desktop fallback entry'
+);
+record(
+  'auth_callback_lands_on_chat',
+  main.includes('callbackUrl=${entryCallback}') || main.includes("callbackUrl=%2Fchat"),
+  'post-auth redirect must land on APP_ENTRY_PATH (/chat)'
+);
+record(
   'update_feed_preserved',
   pkg.build?.publish?.url === 'https://tarx.com/api/download/electron',
   pkg.build?.publish?.url || null,
