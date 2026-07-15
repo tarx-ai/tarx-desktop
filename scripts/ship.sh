@@ -150,7 +150,7 @@ if [[ "$PUBLISH" == true ]]; then
 
   echo ""
   echo "✓ TARX Electron v${VERSION} artifacts uploaded."
-  echo "  Next: patch tarx-web release manifest from dist/tarx-electron-release-${VERSION}-publish-plan.json and deploy tarx.com."
+  echo "  Next: patch tarx-web release manifest from dist/tarx-desktop-release-${VERSION}-publish-plan.json and deploy tarx.com."
 fi
 
 echo ""

@@ -1,6 +1,6 @@
 # Desktop /chat entry — post-#3 verification
 
-**Merged:** PR #3 → default `codex/tarx-electron-voice-setup-source-kill-v1` (`a294b63`)
+**Merged:** PR #3 → default `codex/tarx-desktop-voice-setup-source-kill-v1` (`a294b63`)
 
 ## What Desktop loads
 
@@ -24,8 +24,8 @@
 
 ```bash
 # 1) Default branch has entry contract
-cd tarx-electron && git fetch origin
-git show origin/codex/tarx-electron-voice-setup-source-kill-v1:electron/main.js \
+cd tarx-desktop && git fetch origin
+git show origin/codex/tarx-desktop-voice-setup-source-kill-v1:electron/main.js \
   | rg "APP_ENTRY_PATH|appEntryUrl\\(PRIMARY_URL\\)|pathname === '/home'"
 
 # 2) Navigation QA (must be green)

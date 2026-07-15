@@ -245,7 +245,7 @@ function currentWebContentsUrl() {
 function recordRouteAttempt(url, reason) {
   lastRouteAttempted = url || null;
   writeDiagnostic('latest-route-attempt.json', {
-    schema: 'tarx-electron-route-attempt.v1',
+    schema: 'tarx-desktop-route-attempt.v1',
     ts: new Date().toISOString(),
     reason,
     lastRouteAttempted,
@@ -256,7 +256,7 @@ function recordRouteAttempt(url, reason) {
 
 function rendererRecoverySnapshot(reason, extra = {}) {
   return {
-    schema: 'tarx-electron-renderer-recovery.v1',
+    schema: 'tarx-desktop-renderer-recovery.v1',
     ts: new Date().toISOString(),
     reason,
     status: 'safe_shell_visible',
@@ -1101,11 +1101,11 @@ async function primeVoiceEvidenceSnapshot() {
       label: 'Daniel voice is internal/unapproved.',
     },
     commands: {
-      inventory: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-inventory',
-      doctor: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-doctor',
-      liveCalibration: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && unset TARX_VOICE_NATIVE_CAPTURE_DEVICE && npm run qa:voice-live-calibration',
-      nativeStt: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && unset TARX_VOICE_NATIVE_CAPTURE_DEVICE && TARX_VOICE_NATIVE_CAPTURE=1 npm run qa:voice-native-stt',
-      mediaDevicesProduct: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && TARX_VOICE_MEDIADEVICES_INTERNAL=1 TARX_VOICE_CAPTURE_DRIVER=mediadevices npm run qa:voice-mediadevices-product-capture',
+      inventory: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-desktop" && npm run qa:voice-input-inventory',
+      doctor: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-desktop" && npm run qa:voice-input-doctor',
+      liveCalibration: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-desktop" && unset TARX_VOICE_NATIVE_CAPTURE_DEVICE && npm run qa:voice-live-calibration',
+      nativeStt: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-desktop" && unset TARX_VOICE_NATIVE_CAPTURE_DEVICE && TARX_VOICE_NATIVE_CAPTURE=1 npm run qa:voice-native-stt',
+      mediaDevicesProduct: 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-desktop" && TARX_VOICE_MEDIADEVICES_INTERNAL=1 TARX_VOICE_CAPTURE_DRIVER=mediadevices npm run qa:voice-mediadevices-product-capture',
     },
     operatorAction: evidence.primeReadiness?.json?.operatorAction || null,
     requiredSpokenPhrase: 'TARS, what are we working on today?',
@@ -3303,12 +3303,12 @@ function createWindow() {
         bluetoothButton.addEventListener('click', function() { openSetting('Bluetooth Settings', function() { return voice.openBluetoothSettings(); }); });
         privacyButton.addEventListener('click', function() { openSetting('Microphone Privacy', function() { return voice.openMicrophonePrivacySettings(); }); });
         doctorButton.addEventListener('click', function() {
-          var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && npm run qa:voice-input-doctor';
+          var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-desktop" && npm run qa:voice-input-doctor';
           if (d.copyText) d.copyText(command);
           if (commandNode) commandNode.textContent = 'Copied internal diagnostic command. Command execution is disabled from this app panel: ' + command;
         });
         copyCommandButton.addEventListener('click', function() {
-          var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-electron" && TARX_VOICE_MEDIADEVICES_INTERNAL=1 TARX_VOICE_CAPTURE_DRIVER=mediadevices npm run qa:voice-mediadevices-product-capture';
+          var command = 'cd "/Users/master/Desktop/TARX/Repos - active/tarx-desktop" && TARX_VOICE_MEDIADEVICES_INTERNAL=1 TARX_VOICE_CAPTURE_DRIVER=mediadevices npm run qa:voice-mediadevices-product-capture';
           if (d.copyText) d.copyText(command);
           if (commandNode) commandNode.textContent = 'Copied MediaDevices product capture QA command: ' + command;
         });
@@ -3800,7 +3800,7 @@ async function observeVisionSurface(reason = 'manual') {
       save_screenshot_requires_env: 'TARX_VISION_SAVE_SCREENSHOT=1',
     },
     freshness_policy: null,
-    producer: { name: 'tarx-electron', capture: 'live', reason },
+    producer: { name: 'tarx-desktop', capture: 'live', reason },
     surface: {
       kind: surface.url?.includes('/chat') ? 'chat' : 'unknown',
       url: surface.url || windowRef.webContents.getURL(),
