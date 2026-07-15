@@ -1,95 +1,140 @@
-# TARX Desktop (tarx-electron)
+# TARX Desktop
 
-**The local-first desktop runtime for sovereign AI.**
+**Local-first desktop app for TARX** — private AI that starts on your computer.
 
-Build and run AI applications that start on your computer, scale to hosted compute, and deploy onto enterprise-owned infrastructure — **without rewriting your application contract**.
+| | |
+|---|---|
+| **Product** | [TARX](https://tarx.com) |
+| **Company** | [TARXAN Inc](https://tarx.com) |
+| **App name** | TARX Desktop |
+| **Repository** | `tarx-desktop` (legacy clone URL: `tarx-electron`) |
+| **Platforms** | macOS (Apple Silicon) primary · Windows/Linux later |
+| **Status** | Public Beta — signed & notarized macOS builds |
 
-> **Public name:** TARX Desktop (Mac-first for V1).  
-> **Repo name:** `tarx-electron` (technical, cross-platform Electron shell).
+---
 
-## One Runtime. Three Execution Planes
+## What it is
 
-- **Local (Computer)** — Runs directly on Mac/Windows/Linux with full privacy and offline capability.
-- **Hosted (Supercomputer)** — Seamless burst to accelerated capacity when needed (permissioned).
-- **Enterprise Private (BYO)** — Deploy onto your own hardware/appliances with full governance, observability, and control.
+TARX Desktop is the Mac app that runs your **Computer** runtime locally and loads the TARX chat surface (`/chat`) with the full agentic contract:
 
-## Quickstart (5 minutes)
+- Streaming chat (`streamTarxFromBrowser`)
+- `TOOL_CALL` execution (todos, skills, health, handoffs)
+- Local Bridge on CORE ports (inference, memory, tools)
+
+Same product as [tarx.com/chat](https://tarx.com/chat) — with local runtime attached.
+
+## Quickstart
+
+### Install (end users)
+
+1. Download from **[tarx.com/download](https://tarx.com/download)**
+2. Open the DMG → drag **TARX** to Applications
+3. First launch: if macOS prompts, **Control-click → Open** once (Gatekeeper)
+4. Optional local runtime install:
 
 ```bash
-# Install TARX runtime (Computer)
-curl -fsSL https://cli.tarx.com/install | sh
-
-# From this repo (dev)
-npm ci
-npm run dev
-
-# Or start packaged Desktop once built
-# open dist/mac-arm64/TARX.app
+curl -fsSL https://tarx.com/install | sh
 ```
 
-See [docs.tarx.com](https://docs.tarx.com) for install and operations.
+### Verify install trust
+
+On the download page you will find:
+
+- **Version** and **file size**
+- **SHA-256** of the macOS artifact
+- Statement that the app + DMG are **Developer ID signed, notarized, and stapled**
+
+Local check after download:
+
+```bash
+# Replace with the path to your downloaded DMG
+shasum -a 256 ~/Downloads/TARX-*-arm64.dmg
+# Compare to SHA-256 shown at https://tarx.com/download
+```
+
+Gatekeeper / notarization (after install):
+
+```bash
+spctl --assess --type execute -v /Applications/TARX.app
+# expected: accepted (source=Notarized Developer ID)
+```
+
+### Develop from source
+
+```bash
+git clone https://github.com/tarx-ai/tarx-desktop.git
+cd tarx-desktop
+npm ci
+npm run dev          # loads https://tarx.com/chat by default
+```
+
+Overrides:
+
+```bash
+TARX_DESKTOP_URL=https://tarx.com   # Screens origin
+TARX_DESKTOP_ENTRY=/chat            # product entry path (default)
+```
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│              TARX Desktop (Electron)        │
-│  preload flags · bridge bootstrap · tray    │
-└───────────────────┬─────────────────────────┘
-                    │ loads Screens (web)
-                    ▼
-┌─────────────────────────────────────────────┐
-│  tarx-web · /chat · streamTarxFromBrowser   │
-│  executeToolCalls (skills / todos / health) │
-└───────────────────┬─────────────────────────┘
-                    │ localhost CORE ports
-                    ▼
-┌─────────────────────────────────────────────┐
-│  Bridge :11440 · Inference · Embeddings     │
-│  (control plane / cognitive / memory store  │
-│   stay closed product surfaces)             │
-└─────────────────────────────────────────────┘
+TARX Desktop (Electron shell)
+  ├── preload flags (agentic contract)
+  ├── tray · auto-update · Bridge bootstrap
+  └── loads Screens → /chat
+        ├── streamTarxFromBrowser
+        └── executeToolCalls (skills · todos · health · transfer)
+              └── Bridge :11440 · local Computer runtime
 ```
 
-**Desktop entry:** Electron loads `APP_ENTRY_PATH` (`/chat` by default), not site root.  
-(`https://tarx.com/` still 307s to marketing `/home` on Screens — Desktop deliberately bypasses that.)
+Desktop does **not** reimplement the agent loop. Screens owns chat + tools; Desktop owns the native shell and local runtime.
 
-Override with `TARX_DESKTOP_ENTRY` or `TARX_DESKTOP_URL` when needed.
+## Security
 
-Core principles:
+- **Signed** with Developer ID Application (TARXAN Inc / Apple team)
+- **Notarized** via Apple notarytool; **stapled** tickets on app + DMG when shipped
+- Hardened runtime + entitlements (`build/entitlements.mac.plist`)
+- Local data stays on device by default; Supercomputer only with permission
+- No secrets in TOOL_CALL payloads; Vault / control-plane product surfaces stay closed until gated open
 
-- **Local-first** by default
-- **Portable** across planes
-- **Sovereign** — you control data, models, providers, and policy
-- **Operational** — self-healing, evidence-based, observable
-- **One chat contract** — Desktop does not reimplement agentic loops; Screens `/chat` owns `streamTarxFromBrowser` + `executeToolCalls`
+## Status & roadmap
 
-## Current Maturity
+| Area | Status |
+|------|--------|
+| Chat + TOOL_CALL agentic loop | Live (Screens + Desktop entry `/chat`) |
+| macOS Desktop signed download | Live |
+| Windows / Linux Desktop | Not public yet |
+| Voice production | Closed until chat FTUX solid |
+| Enterprise private runtime | Design partners |
 
-- **Alpha → Beta** — Conversational flow, skills, MCP tool calling, and Electron stability in active hardening.
-- Platforms: Mac (primary), Windows/Linux coming.
-- Status: Actively developed with automated CI/CD and TARX agent orchestration.
-- Voice production remains **closed** until FTUX + chat loops are solid.
+## Contribute
 
-## Roadmap
+1. Open an issue describing the problem or proposal  
+2. Branch from `main` (or current default until rename lands)  
+3. Keep PRs small and product-scoped  
+4. CI green required  
+5. **Production / public download updates** need explicit human authorize  
 
-- Q3 2026: Stable V1 conversational loops + skills ecosystem
-- Q4 2026: Cross-platform + appliance deployment
-- 2027: Full open TARX-OS weights + enterprise private runtime
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-## Security Model
+## Naming
 
-- Memory boundaries and Vault for secrets
-- User-approved skills and external calls
-- Evidence logging for all actions
-- SBOM and signed releases (in progress)
+| Term | Use |
+|------|-----|
+| **TARXAN Inc** | Legal company |
+| **TARX** | Product / brand |
+| **TARX Desktop** | This application (user-facing) |
+| **tarx-desktop** | This repository |
+| **Screens** | Web product (`tarx-web` → tarx.com) |
 
-## Contribution
+## Links
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) when present. We welcome issues, PRs, and design partners. All activity is driven by real product work + TARX automation.
+- Product: [tarx.com](https://tarx.com)  
+- Download: [tarx.com/download](https://tarx.com/download)  
+- Docs: [docs.tarx.com](https://docs.tarx.com)  
+- MCP: [mcp.tarx.com](https://mcp.tarx.com)  
+- Org: [github.com/tarx-ai](https://github.com/tarx-ai)  
 
-**Merge rule:** isolated branch → CI green → human `authorize production` before release.
+## License
 
-## Changelog
-
-See [Releases](https://github.com/tarx-ai/tarx-electron/releases) for detailed history.
+UNLICENSED — proprietary (TARXAN Inc). Public source for transparency and design-partner collaboration; redistribution rights reserved.

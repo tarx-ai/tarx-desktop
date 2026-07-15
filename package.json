@@ -1,7 +1,7 @@
 {
   "name": "tarx-desktop",
-  "version": "1.1.11",
-  "description": "TARX Desktop \u2014 Local AI on your hardware",
+  "version": "1.1.12",
+  "description": "TARX Desktop \u2014 Local AI on your hardware (TARXAN Inc)",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
@@ -46,7 +46,8 @@
     "qa:runtime-spine-readiness": "node scripts/qa-runtime-spine-readiness.js",
     "qa:electron-black-screen-recovery": "node scripts/qa-electron-black-screen-recovery.js",
     "qa:electron-release-stability": "node scripts/qa-electron-release-stability.js",
-    "qa:electron-navigation-boundary": "node scripts/qa-electron-navigation-boundary.js"
+    "qa:electron-navigation-boundary": "node scripts/qa-electron-navigation-boundary.js",
+    "qa:desktop-agentic-chat-smoke": "node scripts/qa-desktop-agentic-chat-smoke.js"
   },
   "author": "TARXAN INC.",
   "license": "UNLICENSED",
