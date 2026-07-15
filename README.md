@@ -1,90 +1,112 @@
-# TARX Desktop (tarx-electron)
+# TARX Desktop (`tarx-electron`)
 
-**The local-first desktop runtime for sovereign AI.**
+**The local-first desktop shell for sovereign AI.**
 
-Build and run AI applications that start on your computer, scale to hosted compute, and deploy onto enterprise-owned infrastructure — **without rewriting your application contract**.
+Public product name: **TARX Desktop** (Mac-first for V1).  
+Technical repo name: **`tarx-electron`** (cross-platform Electron packaging).
 
-> **Public name:** TARX Desktop (Mac-first for V1).  
-> **Repo name:** `tarx-electron` (technical, cross-platform Electron shell).
+Loads **TARX Screens** ([tarx-web](https://github.com/tarx-ai/tarx-web)) and bootstraps the local Bridge runtime so chat, tools, and skills use **one application contract** — no dual client.
 
-## One Runtime. Three Execution Planes
+## One runtime. Three execution planes
 
-- **Local (Computer)** — Runs directly on Mac/Windows/Linux with full privacy and offline capability.
-- **Hosted (Supercomputer)** — Seamless burst to accelerated capacity when needed (permissioned).
-- **Enterprise Private (BYO)** — Deploy onto your own hardware/appliances with full governance, observability, and control.
+- **Computer (local)** — Private default on Mac (Windows/Linux next).  
+- **Supercomputer** — Permissioned headroom when approved.  
+- **Enterprise / Machines** — Sovereign nodes you own; see [tarx.com/machines](https://tarx.com/machines).
 
 ## Quickstart (5 minutes)
 
 ```bash
-# Install TARX runtime (Computer)
+# End-user runtime install
 curl -fsSL https://cli.tarx.com/install | sh
 
-# From this repo (dev)
+# Developer: this repo
+git clone git@github.com:tarx-ai/tarx-electron.git
+cd tarx-electron
+nvm use   # Node 22 — see .nvmrc
 npm ci
 npm run dev
-
-# Or start packaged Desktop once built
-# open dist/mac-arm64/TARX.app
 ```
 
-See [docs.tarx.com](https://docs.tarx.com) for install and operations.
+Packaged app (after build): `dist/mac-arm64/TARX.app` (product name **TARX**).
+
+Screens URL defaults to `https://tarx.com` (override with `TARX_DESKTOP_URL` for local Screens).
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│              TARX Desktop (Electron)        │
-│  preload flags · bridge bootstrap · tray    │
-└───────────────────┬─────────────────────────┘
-                    │ loads Screens (web)
-                    ▼
-┌─────────────────────────────────────────────┐
-│  tarx-web · /chat · streamTarxFromBrowser   │
-│  executeToolCalls (skills / todos / health) │
-└───────────────────┬─────────────────────────┘
-                    │ localhost CORE ports
-                    ▼
-┌─────────────────────────────────────────────┐
-│  Bridge :11440 · Inference · Embeddings     │
-│  (control plane / cognitive / memory store  │
-│   stay closed product surfaces)             │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│           TARX Desktop (Electron)            │
+│  preload · bridge bootstrap · tray · updates │
+└────────────────────┬─────────────────────────┘
+                     │ loads Screens
+                     ▼
+┌──────────────────────────────────────────────┐
+│  tarx-web · /chat                            │
+│  streamTarxFromBrowser + executeToolCalls    │
+└────────────────────┬─────────────────────────┘
+                     │ localhost CORE
+                     ▼
+┌──────────────────────────────────────────────┐
+│  Bridge :11440 · Inference · Embeddings      │
+│  Closed: control plane, cognitive product,   │
+│  memory store, Super multi-node, prod voice  │
+└──────────────────────────────────────────────┘
 ```
 
-Core principles:
+**Contract:** Desktop exposes `__TARX_DESKTOP__` / `__TARX_ELECTRON__` and  
+`chatStreamContract: 'web-shared-v1'`. It does **not** reimplement TOOL_CALL execution.
 
-- **Local-first** by default
-- **Portable** across planes
-- **Sovereign** — you control data, models, providers, and policy
-- **Operational** — self-healing, evidence-based, observable
-- **One chat contract** — Desktop does not reimplement agentic loops; Screens page owns `streamTarxFromBrowser` + `executeToolCalls`
+## Maturity
 
-## Current Maturity
-
-- **Alpha → Beta** — Conversational flow, skills, MCP tool calling, and Electron stability in active hardening.
-- Platforms: Mac (primary), Windows/Linux coming.
-- Status: Actively developed with automated CI/CD and TARX agent orchestration.
-- Voice production remains **closed** until FTUX + chat loops are solid.
+| Area | Status |
+|------|--------|
+| Mac shell + Bridge bootstrap | **Beta** |
+| Shared Screens agentic chat | **Beta** (depends on tarx-web main) |
+| Windows / Linux | Coming |
+| Production voice | **Closed** until FTUX + chat loops are solid |
+| Signed releases / notarize | In progress (see workflows) |
 
 ## Roadmap
 
-- Q3 2026: Stable V1 conversational loops + skills ecosystem
-- Q4 2026: Cross-platform + appliance deployment
-- 2027: Full open TARX-OS weights + enterprise private runtime
+- **Q3 2026:** Stable V1 conversational loops via Screens  
+- **Q4 2026:** Cross-platform Desktop + appliance pairing  
+- **2027:** Deeper enterprise private runtime + open beachheads  
 
-## Security Model
+## Security
 
-- Memory boundaries and Vault for secrets
-- User-approved skills and external calls
-- Evidence logging for all actions
-- SBOM and signed releases (in progress)
+- Secrets in Vault; skills and external calls user-approved  
+- Evidence-oriented local operator paths (feature-flagged)  
+- SBOM + signed releases (in progress)  
+- Do not open control-plane product surfaces from this shell  
 
 ## Contribution
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) when present. We welcome issues, PRs, and design partners. All activity is driven by real product work + TARX automation.
+1. Branch from the default integration branch (moving toward `main`)  
+2. `npm ci` · Node 22  
+3. PR · CI green (preload contract + syntax)  
+4. Release / production packaging only with **`authorize production`**
 
-**Merge rule:** isolated branch → CI green → human `authorize production` before release.
+```bash
+npm run dev
+npm run build
+# CI: .github/workflows/ci.yml + voice-beta packaging workflows
+```
 
-## Changelog
+## Naming
 
-See [Releases](https://github.com/tarx-ai/tarx-electron/releases) for detailed history.
+| Public | Technical |
+|--------|-----------|
+| TARX Desktop | `tarx-electron` |
+| TARX Screens | `tarx-web` |
+| TARX (app binary) | productName in Electron build |
+
+## Related
+
+- Product web: https://github.com/tarx-ai/tarx-web  
+- CLI: https://github.com/tarx-ai/tarx-cli  
+- Open beachheads: [tarx-palantir](https://github.com/tarx-ai/tarx-palantir) · [tarx-weights](https://github.com/tarx-ai/tarx-weights)  
+- Site: https://tarx.com · Contact: howdy@tarx.com  
+
+## Releases
+
+https://github.com/tarx-ai/tarx-electron/releases  
