@@ -605,6 +605,8 @@ contextBridge.exposeInMainWorld('__TARX_DESKTOP__', {
   // Screens contract: same chat stream + TOOL_CALL path as web (no dual client)
   chatStreamContract: 'web-shared-v1',
   agenticTools: 'page-executeToolCalls',
+  // Agent-to-agent handoff rides /api/agentic/transfer via page executeToolCalls
+  agentTransferContract: 'api-agentic-transfer-v1',
   // Update flow
   checkForUpdates: () => ipcRenderer.invoke('tarx:check-for-updates'),
   downloadUpdate: () => ipcRenderer.invoke('tarx:download-update'),
