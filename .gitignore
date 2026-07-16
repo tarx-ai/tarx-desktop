@@ -5,3 +5,6 @@ out/
 *.log
 .env
 .env.local
+
+# Generated at package time (must match clean tree commit)
+resources/build-identity.json

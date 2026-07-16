@@ -8,7 +8,8 @@ let commit = 'unknown';
 let dirty = false;
 try {
   commit = execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim();
-  dirty = execSync('git status --porcelain', { cwd: root, encoding: 'utf8' }).trim().length > 0;
+  // Only tracked file dirtiness blocks release; generated build-identity.json is gitignored.
+  dirty = execSync('git status --porcelain --untracked-files=no', { cwd: root, encoding: 'utf8' }).trim().length > 0;
 } catch {}
 if (dirty) {
   console.error('[build-identity] Working tree is dirty. Refuse packaging from dirty tree.');
