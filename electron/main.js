@@ -7,6 +7,8 @@ const https = require('https');
 const http = require('http');
 const fs = require('fs');
 const { spawn, spawnSync, execFileSync } = require('child_process');
+const { snapshotResources, applyMemoryPressurePolicy } = require('./resource-guard');
+const { enforceDatasetRetention, snapshotGeneratedStorage } = require('./generated-storage');
 
 const isDev = process.env.NODE_ENV === 'development';
 const SAFE_MODE = process.env.TARX_SAFE_MODE === '1' || process.argv.includes('--tarx-safe-mode');
@@ -2493,6 +2495,16 @@ app.on('second-instance', (_event, argv) => {
   if (deepLink) handleDeepLink(deepLink);
 });
 
+
+// Bound generated dataset retention on quit (never deletes weights/Vault/DB)
+app.on('before-quit', () => {
+  try {
+    enforceDatasetRetention(); // generated-storage-enforce-on-quit
+  } catch (err) {
+    console.warn('[generated-storage-enforce-on-quit]', err && err.message ? err.message : err);
+  }
+});
+
 // ── Window creation ──────────────────────────────────────────────────────────
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -4569,6 +4581,20 @@ ipcMain.handle('tarx:runtime-status', async () => {
   await ensureLocalRuntime();
   return runtimeState;
 });
+
+ipcMain.handle('tarx:resource-snapshot', async () => {
+  const snap = snapshotResources();
+  return snap;
+});
+
+ipcMain.handle('tarx:resource-pressure-apply', async () => {
+  const snap = snapshotResources();
+  return applyMemoryPressurePolicy(snap);
+});
+
+ipcMain.handle('tarx:generated-storage-snapshot', async () => snapshotGeneratedStorage());
+
+ipcMain.handle('tarx:generated-storage-enforce', async () => enforceDatasetRetention());
 
 ipcMain.handle('tarx:local-data-status', async () => {
   await ensureLocalRuntime();
