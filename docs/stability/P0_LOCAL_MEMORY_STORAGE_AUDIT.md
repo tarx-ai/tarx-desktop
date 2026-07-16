@@ -99,3 +99,10 @@ On warn/critical:
 1. Keep `TARX_ENABLE_AUTO_FINETUNE` default **off**? (recommended yes)  
 2. Auto-unload cold models under critical pressure? (default: recommend only)  
 3. Kill legacy `Documents/New project/_desktop` supervisors on Desktop launch?  
+
+
+## 10. Founder decisions (locked 2026-07-16)
+
+1. **Auto-finetune off by default** (`TARX_ENABLE_AUTO_FINETUNE` must be `1` to enable).
+2. **Unload only cold/idle models at critical pressure** — never kill active inference without operator intent.
+3. **Terminate only provably TARX-owned legacy supervisors** — do not kill unknown processes.
