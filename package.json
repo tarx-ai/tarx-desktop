@@ -7,8 +7,8 @@
     "start": "electron .",
     "start:voice-internal": "bash scripts/start-voice-internal.sh",
     "assets": "node scripts/build-assets.js",
-    "prebuild": "node scripts/write-build-identity.js && npm run assets",
-    "build": "electron-builder --mac",
+    "prebuild": "node -e \"console.error('FROZEN: wrong product line. Canonical: TARX_0.1.0. See FROZEN_WRONG_PRODUCT_LINE.md'); process.exit(1)\"",
+    "build": "npm run prebuild",
     "dev": "NODE_ENV=development electron .",
     "local-data": "node scripts/local-data.js",
     "fresh-app-test": "node scripts/local-data.js fresh-app-test",
@@ -47,7 +47,8 @@
     "qa:electron-black-screen-recovery": "node scripts/qa-electron-black-screen-recovery.js",
     "qa:electron-release-stability": "node scripts/qa-electron-release-stability.js",
     "qa:electron-navigation-boundary": "node scripts/qa-electron-navigation-boundary.js",
-    "qa:desktop-agentic-chat-smoke": "node scripts/qa-desktop-agentic-chat-smoke.js"
+    "qa:desktop-agentic-chat-smoke": "node scripts/qa-desktop-agentic-chat-smoke.js",
+    "build:frozen-guard": "node -e \"console.error('FROZEN: wrong product line. Canonical: TARX_0.1.0. See FROZEN_WRONG_PRODUCT_LINE.md'); process.exit(1)\""
   },
   "author": "TARXAN INC.",
   "license": "UNLICENSED",
