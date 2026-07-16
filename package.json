@@ -1,13 +1,13 @@
 {
-  "name": "tarx-desktop",
-  "version": "1.1.12",
-  "description": "TARX Desktop — Mac Beta local-first AI (TARXAN Inc)",
+  "name": "tarx-computer",
+  "version": "1.1.14-beta.1",
+  "description": "TARX Computer \u2014 private beta local-first AI (TARXAN Inc)",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
     "start:voice-internal": "bash scripts/start-voice-internal.sh",
     "assets": "node scripts/build-assets.js",
-    "prebuild": "npm run assets",
+    "prebuild": "node scripts/write-build-identity.js && npm run assets",
     "build": "electron-builder --mac",
     "dev": "NODE_ENV=development electron .",
     "local-data": "node scripts/local-data.js",
@@ -57,8 +57,8 @@
     "electron-builder": "^26.0.0"
   },
   "build": {
-    "appId": "com.tarxan.tarx",
-    "productName": "TARX",
+    "appId": "com.tarx.computer",
+    "productName": "TARX Computer",
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "assets/icon.icns",
@@ -67,13 +67,16 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "TARX uses the microphone for voice input so you can speak instead of type."
+        "NSMicrophoneUsageDescription": "TARX Computer uses the microphone for voice input so you can speak instead of type.",
+        "CFBundleDisplayName": "TARX Computer",
+        "CFBundleName": "TARX Computer"
       }
     },
     "files": [
       "electron/**",
       "assets/**",
       "resources/local-operator-packs.json",
+      "resources/build-identity.json",
       "package.json",
       "node_modules/**",
       "!**/.tarx/**",
@@ -98,7 +101,7 @@
     ],
     "afterSign": "./scripts/notarize.js",
     "dmg": {
-      "title": "TARX",
+      "title": "TARX Computer",
       "background": "assets/dmg-background.png",
       "iconSize": 96,
       "window": {
@@ -122,7 +125,9 @@
     "publish": {
       "provider": "generic",
       "url": "https://tarx.com/api/download/electron"
-    }
+    },
+    "executableName": "TARX Computer",
+    "artifactName": "TARX-Computer-${version}-${arch}.${ext}"
   },
   "dependencies": {
     "electron-updater": "^6.8.3"
@@ -130,5 +135,6 @@
   "engines": {
     "node": ">=20 <23"
   },
-  "packageManager": "npm@10.9.2"
+  "packageManager": "npm@10.9.2",
+  "tarxDesktopUrl": ""
 }

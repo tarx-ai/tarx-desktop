@@ -24,17 +24,48 @@ function packagedTarxDesktopUrl() {
   }
 }
 
-// URLs — default to tarx.com, but allow signed beta/dev apps without shipping Voice to prod.
-// Desktop product surface is the agentic chat contract (/chat), not marketing /home.
-const PRIMARY_URL = process.env.TARX_DESKTOP_URL || process.env.TARX_VOICE_BETA_DESKTOP_URL || packagedTarxDesktopUrl() || 'https://tarx.com';
+// Canonical beta: packaged local chat shell + local Bridge. Remote is optional override only.
+// NEVER boot marketing apex (tarx.com / marketing-funnel) as the product shell.
+const MARKETING_ORIGINS = new Set(['https://tarx.com', 'https://www.tarx.com']);
+const PACKAGED_LOCAL_SHELL = process.env.TARX_FORCE_REMOTE_SHELL === '1' ? false : true;
+const PRIMARY_URL =
+  process.env.TARX_DESKTOP_URL ||
+  process.env.TARX_VOICE_BETA_DESKTOP_URL ||
+  packagedTarxDesktopUrl() ||
+  '';
 const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/chat';
 const FALLBACK_PORTS = [11440, 11441];
 const FALLBACK_URL = 'http://localhost:11440'; // Updated dynamically
-const PRODUCTION_APP_ORIGINS = new Set(['https://tarx.com', 'https://www.tarx.com']);
+const PRODUCTION_APP_ORIGINS = new Set([
+  'https://app.tarx.com',
+  'https://tarx.com',
+  'https://www.tarx.com',
+]);
 
-/** Resolve the primary product route for a Screens base origin. */
+function localChatShellPath() {
+  return path.join(__dirname, 'chat.html');
+}
+
+function localChatShellUrl() {
+  let version = '1.1.14-beta.1';
+  try {
+    version = require(path.join(app.getAppPath(), 'package.json')).version || version;
+  } catch {}
+  const q = new URLSearchParams({ v: String(version), channel: 'private-beta', mode: 'packaged-local' });
+  return `file://${localChatShellPath()}?${q.toString()}`;
+}
+
+/** Resolve a remote product route only when explicitly configured. Packaged local is default. */
 function appEntryUrl(base = PRIMARY_URL) {
-  const origin = String(base || PRIMARY_URL).replace(/\/$/, '');
+  if (!base || PACKAGED_LOCAL_SHELL) return localChatShellUrl();
+  let origin = String(base || '').replace(/\/$/, '');
+  try {
+    const parsed = new URL(origin.includes('://') ? origin : `https://${origin}`);
+    if (MARKETING_ORIGINS.has(parsed.origin)) return localChatShellUrl();
+    origin = parsed.origin;
+  } catch {
+    return localChatShellUrl();
+  }
   const entry = APP_ENTRY_PATH.startsWith('/') ? APP_ENTRY_PATH : `/${APP_ENTRY_PATH}`;
   return `${origin}${entry}`;
 }
@@ -3459,6 +3490,10 @@ function createWindow() {
     handleLoadFailure(errorCode, errorDesc, validatedUrl);
   });
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    setTimeout(() => { assertProductShellOrRecover('did_finish_load').catch(() => {}); }, 400);
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -3479,50 +3514,68 @@ async function loadBestUrl() {
     return;
   }
 
-  const primary = await probe(PRIMARY_URL + '/api/version', true);
-  if (primary) {
-    currentUrl = PRIMARY_URL;
-    isOnline = true;
-    trayManager?.setStatus('online');
-    // Always open agentic chat — root / redirects to legacy /home on Screens.
-    loadRouteWithRecovery(appEntryUrl(PRIMARY_URL), 'load_best_primary');
+  try {
+    await ensureLocalRuntime();
+  } catch (err) {
+    console.warn('[tarx] local runtime start skipped:', err instanceof Error ? err.message : err);
+  }
+
+  const localRuntimeOk = await probe(RUNTIME_HEALTH_URL, false, 3000, { okStatuses: [200] });
+
+  // P0: packaged local chat shell is boot-critical; remote web is never required.
+  if (PACKAGED_LOCAL_SHELL && fs.existsSync(localChatShellPath())) {
+    currentUrl = 'local-packaged';
+    isOnline = localRuntimeOk;
+    trayManager?.setStatus(localRuntimeOk ? 'local' : 'offline');
+    loadRouteWithRecovery(localChatShellUrl(), 'load_best_packaged_local');
     return;
   }
 
-  const fallback = await probe(FALLBACK_URL + '/health', false);
-  if (fallback) {
-    currentUrl = FALLBACK_URL;
-    isOnline = false;
-    trayManager?.setStatus('local');
-    loadRouteWithRecovery(appEntryUrl(FALLBACK_URL), 'load_best_fallback');
-    return;
+  // Explicit remote shell only when TARX_FORCE_REMOTE_SHELL=1 and TARX_DESKTOP_URL is set.
+  if (process.env.TARX_FORCE_REMOTE_SHELL === '1' && PRIMARY_URL) {
+    try {
+      const productOrigin = new URL(PRIMARY_URL).origin;
+      if (!MARKETING_ORIGINS.has(productOrigin)) {
+        const entry = `${productOrigin}${APP_ENTRY_PATH.startsWith('/') ? APP_ENTRY_PATH : `/${APP_ENTRY_PATH}`}`;
+        const versionOk = await probe(`${productOrigin}/api/version`, true, 5000, { okStatuses: [200] });
+        const entryOk = await probe(entry, true, 5000, { okStatuses: [200, 304] });
+        if (versionOk && entryOk) {
+          currentUrl = productOrigin;
+          isOnline = true;
+          trayManager?.setStatus('online');
+          loadRouteWithRecovery(entry, 'load_best_remote_override');
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('[tarx] remote shell override failed:', err instanceof Error ? err.message : err);
+    }
   }
 
-  // Both unreachable — show recovery shell instead of a blank/offline trap.
   isOnline = false;
-  trayManager?.setStatus('offline');
-  showSafeShell('primary_and_fallback_unreachable');
+  trayManager?.setStatus(localRuntimeOk ? 'local' : 'offline');
+  showSafeShell(localRuntimeOk ? 'product_shell_missing_packaged_chat' : 'primary_and_fallback_unreachable', {
+    localRuntimeOk,
+    packagedShell: localChatShellPath(),
+  });
 }
 
 function handleLoadFailure(errorCode = null, errorDesc = '', validatedUrl = '') {
   if (safeShellVisible) return;
-  if (currentUrl === PRIMARY_URL) {
-    probe(FALLBACK_URL + '/health', false).then((ok) => {
-      if (ok) {
-        currentUrl = FALLBACK_URL;
-        trayManager?.setStatus('local');
-        loadRouteWithRecovery(appEntryUrl(FALLBACK_URL), 'primary_failed_fallback');
-      } else {
-        trayManager?.setStatus('offline');
-        showSafeShell('load_failed_no_fallback', { errorCode, errorDesc, route: validatedUrl });
-      }
+  probe(RUNTIME_HEALTH_URL, false, 3000, { okStatuses: [200] }).then((localOk) => {
+    trayManager?.setStatus(localOk ? 'local' : 'offline');
+    showSafeShell(localOk ? 'load_failed_runtime_ok' : 'load_failed_no_fallback', {
+      errorCode,
+      errorDesc,
+      route: validatedUrl || currentUrl,
+      localRuntimeOk: localOk,
     });
-  } else {
-    showSafeShell('load_failed', { errorCode, errorDesc, route: validatedUrl || currentUrl });
-  }
+  });
 }
 
-function probe(url, secure, timeoutMs = 5000) {
+/** HTTP probe. Default requires 2xx (Next.js 404 must not look healthy). */
+function probe(url, secure, timeoutMs = 5000, options = {}) {
+  const okStatuses = options.okStatuses || null;
   return new Promise((resolve) => {
     let mod = secure ? https : http;
     try {
@@ -3530,12 +3583,43 @@ function probe(url, secure, timeoutMs = 5000) {
       mod = parsed.protocol === 'http:' ? http : https;
     } catch {}
     const req = mod.get(url, { timeout: timeoutMs }, (res) => {
-      resolve(res.statusCode < 500);
+      const code = res.statusCode || 0;
+      if (okStatuses) resolve(okStatuses.includes(code));
+      else resolve(code >= 200 && code < 300);
       res.resume();
     });
     req.on('error', () => resolve(false));
     req.on('timeout', () => { req.destroy(); resolve(false); });
   });
+}
+
+/** Reject raw Next.js 404 pages. Packaged local shell is always valid. */
+async function assertProductShellOrRecover(reason = 'did_finish_load') {
+  if (!mainWindow || mainWindow.isDestroyed() || safeShellVisible) return;
+  try {
+    const hrefNow = currentWebContentsUrl() || '';
+    if (hrefNow.startsWith('file://') && hrefNow.includes('chat.html')) return;
+    const verdict = await mainWindow.webContents.executeJavaScript(`(() => {
+      const text = (document.body && document.body.innerText) || '';
+      const title = document.title || '';
+      const href = location.href || '';
+      const isNext404 = /This page could not be found/i.test(text) || /^404\\b/i.test(title);
+      const isPackagedLocal = href.startsWith('file://') && /chat\\.html/.test(href);
+      return { isNext404, isPackagedLocal, href };
+    })()`);
+    if (verdict?.isPackagedLocal) return;
+    if (verdict?.isNext404) {
+      firstRendererError = firstRendererError || {
+        ts: new Date().toISOString(),
+        source: reason,
+        message: 'nextjs_not_found_rendered',
+        route: verdict.href,
+      };
+      handleLoadFailure(404, 'nextjs_not_found_rendered', verdict.href);
+    }
+  } catch {
+    /* ignore evaluation races */
+  }
 }
 
 // ── Floating Composer Window ─────────────────────────────────────────────────
