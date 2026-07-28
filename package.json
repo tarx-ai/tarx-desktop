@@ -47,6 +47,7 @@
     "qa:electron-black-screen-recovery": "node scripts/qa-electron-black-screen-recovery.js",
     "qa:electron-release-stability": "node scripts/qa-electron-release-stability.js",
     "qa:electron-navigation-boundary": "node scripts/qa-electron-navigation-boundary.js",
+    "qa:desktop-computer-entry": "node scripts/qa-desktop-computer-entry-smoke.js",
     "qa:desktop-agentic-chat-smoke": "node scripts/qa-desktop-agentic-chat-smoke.js"
   },
   "author": "TARXAN INC.",

@@ -24,19 +24,34 @@ function packagedTarxDesktopUrl() {
   }
 }
 
-// URLs — default to tarx.com, but allow signed beta/dev apps without shipping Voice to prod.
-// Desktop product surface is the agentic chat contract (/chat), not marketing /home.
-const PRIMARY_URL = process.env.TARX_DESKTOP_URL || process.env.TARX_VOICE_BETA_DESKTOP_URL || packagedTarxDesktopUrl() || 'https://tarx.com';
-const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/chat';
+// URLs — Desktop uses the product app origin, not the tarx.com marketing site.
+// Computer is the canonical shell; chat remains an explicit task surface.
+const PRIMARY_URL = process.env.TARX_DESKTOP_URL || process.env.TARX_VOICE_BETA_DESKTOP_URL || packagedTarxDesktopUrl() || 'https://app.tarx.com';
+const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/computer';
+const CHAT_ENTRY_PATH = '/chat';
 const FALLBACK_PORTS = [11440, 11441];
 const FALLBACK_URL = 'http://localhost:11440'; // Updated dynamically
-const PRODUCTION_APP_ORIGINS = new Set(['https://tarx.com', 'https://www.tarx.com']);
+const CONFIGURED_PRIMARY_ORIGIN = (() => {
+  try {
+    return new URL(PRIMARY_URL).origin;
+  } catch {
+    return '';
+  }
+})();
+const PRODUCTION_APP_ORIGINS = new Set(
+  ['https://app.tarx.com', CONFIGURED_PRIMARY_ORIGIN].filter(Boolean)
+);
 
 /** Resolve the primary product route for a Screens base origin. */
 function appEntryUrl(base = PRIMARY_URL) {
   const origin = String(base || PRIMARY_URL).replace(/\/$/, '');
   const entry = APP_ENTRY_PATH.startsWith('/') ? APP_ENTRY_PATH : `/${APP_ENTRY_PATH}`;
   return `${origin}${entry}`;
+}
+
+function chatEntryUrl(base = PRIMARY_URL) {
+  const origin = String(base || PRIMARY_URL).replace(/\/$/, '');
+  return `${origin}${CHAT_ENTRY_PATH}`;
 }
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 const RUNTIME_HEALTH_URL = 'http://127.0.0.1:11440/health';
@@ -162,7 +177,7 @@ function isHandledDeepLinkUrl(url) {
 
 function rememberAllowedAppUrl(url) {
   if (!isAllowedAppUrl(url)) return;
-  // Never persist site root as the product entry — Screens / 307s to marketing /home.
+  // Never persist site root or the retired home route as the product entry.
   const parsed = parseUrl(url);
   if (parsed && (parsed.pathname === '/' || parsed.pathname === '' || parsed.pathname === '/home')) {
     lastAllowedAppUrl = appEntryUrl(`${parsed.origin}`);
@@ -3484,7 +3499,7 @@ async function loadBestUrl() {
     currentUrl = PRIMARY_URL;
     isOnline = true;
     trayManager?.setStatus('online');
-    // Always open agentic chat — root / redirects to legacy /home on Screens.
+    // Computer is the canonical Desktop shell.
     loadRouteWithRecovery(appEntryUrl(PRIMARY_URL), 'load_best_primary');
     return;
   }
@@ -3576,8 +3591,8 @@ function openComposerWindow() {
     },
   });
 
-  // Load agentic chat in the composer — same entry as main window
-  const composerURL = appEntryUrl(currentUrl === FALLBACK_URL ? FALLBACK_URL : PRIMARY_URL);
+  // The floating composer remains a focused chat surface within Computer.
+  const composerURL = chatEntryUrl(currentUrl === FALLBACK_URL ? FALLBACK_URL : PRIMARY_URL);
   composerWindow.loadURL(composerURL);
 
   // Inject glassmorphic styling once loaded
@@ -3802,7 +3817,11 @@ async function observeVisionSurface(reason = 'manual') {
     freshness_policy: null,
     producer: { name: 'tarx-desktop', capture: 'live', reason },
     surface: {
-      kind: surface.url?.includes('/chat') ? 'chat' : 'unknown',
+      kind: surface.url?.includes('/computer')
+        ? 'computer'
+        : surface.url?.includes('/chat')
+          ? 'chat'
+          : 'unknown',
       url: surface.url || windowRef.webContents.getURL(),
       title: surface.title || '',
       visibleText,
@@ -3908,7 +3927,7 @@ function startHealthLoop() {
     const primary = await probe(PRIMARY_URL + '/api/version', true);
 
     if (primary && currentUrl !== PRIMARY_URL) {
-      // Came back online — reload primary agentic chat surface
+      // Came back online — reload the canonical Computer shell.
       currentUrl = PRIMARY_URL;
       isOnline = true;
       trayManager?.setStatus('online');
@@ -4489,7 +4508,7 @@ function handleDeepLink(url) {
   }
 
   // Convert tarx://auth/callback?token=X&email=Y
-  // to     https://tarx.com/api/auth/callback/resend?token=X&email=Y
+  // to     https://app.tarx.com/api/auth/callback/resend?token=X&email=Y
   try {
     const parsed = new URL(url);
     // tarx://auth/callback → host="auth", pathname="/callback"
@@ -4497,7 +4516,7 @@ function handleDeepLink(url) {
     const params = parsed.search; // e.g., ?token=X&email=Y
 
     if (fullPath.startsWith('/auth/callback')) {
-      // Redirect to Auth.js callback with the token, then land on agentic /chat.
+      // Redirect to Auth.js callback with the token, then land on Computer.
       const entryCallback = encodeURIComponent(APP_ENTRY_PATH);
       const webUrl = `${PRIMARY_URL}/api/auth/callback/resend${params}&callbackUrl=${entryCallback}`;
 
@@ -4506,7 +4525,7 @@ function handleDeepLink(url) {
         mainWindow.focus();
         loadRouteWithRecovery(webUrl, 'deep_link_auth');
 
-        // After auth callback processes, always navigate to chat entry.
+        // After auth callback processes, always navigate to Computer.
         // Auth.js sometimes lands on /settings or /login?error= — override both.
         mainWindow.webContents.once('did-finish-load', () => {
           const finalUrl = mainWindow.webContents.getURL();

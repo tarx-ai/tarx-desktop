@@ -38,9 +38,13 @@ Expect: `accepted` / `source=Notarized Developer ID` and stapler validate OK whe
 
 ## What this app does
 
-- Loads TARX Screens at **`/chat`** (agentic product surface).
-- Bootstraps the local **Computer** Bridge when available.
-- Does **not** reimplement chat tools in the shell — chat + `TOOL_CALL` run in the loaded web product.
+- Opens the canonical **Computer** shell at
+  **`https://app.tarx.com/computer`**.
+- Bootstraps the local **Computer** Bridge when available and exposes connection,
+  approval, tool, and evidence state through that shell.
+- Keeps `/chat` as a focused task surface instead of treating chat as the whole
+  Desktop product.
+- Opens marketing and documentation links outside the application shell.
 
 ## Develop
 
@@ -53,7 +57,7 @@ npm run dev
 
 ```bash
 node scripts/qa-electron-navigation-boundary.js
-node scripts/qa-desktop-agentic-chat-smoke.js
+node scripts/qa-desktop-computer-entry-smoke.js
 ```
 
 ## Security

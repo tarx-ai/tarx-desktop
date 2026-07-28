@@ -17,8 +17,9 @@ function record(name, pass, detail = null, severity = 'P0') {
 
 record(
   'exact_app_origin_allowlist',
-  main.includes("const PRODUCTION_APP_ORIGINS = new Set(['https://tarx.com', 'https://www.tarx.com']);"),
-  'allowed production origins must be exact app origins'
+  main.includes("['https://app.tarx.com', CONFIGURED_PRIMARY_ORIGIN].filter(Boolean)") &&
+    !main.includes("'https://www.tarx.com'"),
+  'only the product app origin and an explicit signed beta/dev override may stay inside Desktop'
 );
 record(
   'no_wildcard_tarx_subdomain_allow',
@@ -56,23 +57,31 @@ record(
   'magic-link auth callback must remain handled'
 );
 record(
-  'desktop_entry_is_agentic_chat',
-  main.includes("const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/chat'") &&
+  'desktop_entry_is_computer',
+  main.includes("|| 'https://app.tarx.com'") &&
+    main.includes("const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/computer'") &&
     main.includes('function appEntryUrl') &&
     main.includes('loadRouteWithRecovery(appEntryUrl(PRIMARY_URL), \'load_best_primary\')'),
-  'Desktop must boot into /chat (agentic contract), not root → /home'
+  'Desktop must boot into the Computer shell on the product app origin'
 );
 record(
   'no_legacy_home_entry_default',
   !main.includes("lastAllowedAppUrl = 'https://tarx.com/home'") &&
     !main.includes("return isAllowedAppUrl(lastAllowedAppUrl) ? lastAllowedAppUrl : 'https://tarx.com/home'") &&
     main.includes("parsed.pathname === '/home'"),
-  'legacy /home must not be the Desktop fallback entry; root//home remapped to APP_ENTRY'
+  'legacy /home must not be the Desktop fallback entry; root and /home remap to Computer'
 );
 record(
-  'auth_callback_lands_on_chat',
-  main.includes('callbackUrl=${entryCallback}') || main.includes("callbackUrl=%2Fchat"),
-  'post-auth redirect must land on APP_ENTRY_PATH (/chat)'
+  'auth_callback_lands_on_computer',
+  main.includes('callbackUrl=${entryCallback}') && main.includes('encodeURIComponent(APP_ENTRY_PATH)'),
+  'post-auth redirect must land on APP_ENTRY_PATH (/computer)'
+);
+record(
+  'composer_keeps_explicit_chat_surface',
+  main.includes("const CHAT_ENTRY_PATH = '/chat'") &&
+    main.includes('function chatEntryUrl') &&
+    main.includes('const composerURL = chatEntryUrl('),
+  'the focused composer may use /chat without making chat the Desktop shell'
 );
 record(
   'update_feed_preserved',

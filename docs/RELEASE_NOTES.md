@@ -1,5 +1,16 @@
 # Release Notes
 
+## 2026-07-28 - Computer Becomes the Canonical Desktop Shell
+
+- Moves the default Desktop origin from marketing `tarx.com` to
+  `app.tarx.com`.
+- Opens `/computer` as the main window and post-auth destination.
+- Keeps `/chat` available as the focused composer and task surface.
+- Restricts in-app production navigation to the exact product-app origin;
+  marketing and documentation links open in the system browser.
+- Replaces the obsolete production `/chat` gate with a live Computer-entry
+  smoke while retaining the old QA command as a compatibility alias.
+
 ## 2026-05-17 - Voice Device Hardening
 
 - Moves internal Manual Voice product capture to Electron MediaDevices with AVFoundation retained as QA fallback.

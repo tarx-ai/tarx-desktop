@@ -62,6 +62,11 @@ jobs:
           node --check electron/main.js
           node --check electron/preload.js
 
+      - name: Verify canonical Computer entry
+        run: |
+          npm run qa:electron-navigation-boundary
+          npm run qa:desktop-computer-entry
+
       - name: Package name is tarx-desktop
         run: |
           node -e '
