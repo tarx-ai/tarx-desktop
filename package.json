@@ -53,8 +53,8 @@
   "license": "UNLICENSED",
   "devDependencies": {
     "@electron/notarize": "^3.1.1",
-    "electron": "^35.0.0",
-    "electron-builder": "^26.0.0"
+    "electron": "^39.8.10",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "com.tarxan.tarx",
@@ -125,7 +125,7 @@
     }
   },
   "dependencies": {
-    "electron-updater": "^6.8.3"
+    "electron-updater": "^6.8.9"
   },
   "engines": {
     "node": ">=20 <23"
