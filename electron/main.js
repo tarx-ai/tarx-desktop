@@ -24,13 +24,26 @@ function packagedTarxDesktopUrl() {
   }
 }
 
-// URLs — default to tarx.com, but allow signed beta/dev apps without shipping Voice to prod.
-// Desktop product surface is the agentic chat contract (/chat), not marketing /home.
-const PRIMARY_URL = process.env.TARX_DESKTOP_URL || process.env.TARX_VOICE_BETA_DESKTOP_URL || packagedTarxDesktopUrl() || 'https://tarx.com';
-const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/chat';
-const FALLBACK_PORTS = [11440, 11441];
-const FALLBACK_URL = 'http://localhost:11440'; // Updated dynamically
-const PRODUCTION_APP_ORIGINS = new Set(['https://tarx.com', 'https://www.tarx.com']);
+// URLs — Computer is the canonical product entry (not marketing root, not legacy /home).
+// Prefer app.tarx.com/computer; allow local Computer ports and explicit overrides.
+// Supercomputer remains off unless explicitly approved. Do not default to tarx.com/chat.
+const PRIMARY_URL =
+  process.env.TARX_DESKTOP_URL ||
+  process.env.TARX_VOICE_BETA_DESKTOP_URL ||
+  packagedTarxDesktopUrl() ||
+  'https://app.tarx.com';
+const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/computer';
+const FALLBACK_PORTS = [3050, 3051, 11440, 11441];
+const FALLBACK_URL = 'http://127.0.0.1:3050'; // Local TARX Computer when packaged app is offline
+const PRODUCTION_APP_ORIGINS = new Set([
+  'https://app.tarx.com',
+  'https://tarx.com',
+  'https://www.tarx.com',
+  'http://127.0.0.1:3050',
+  'http://localhost:3050',
+  'http://127.0.0.1:3051',
+  'http://localhost:3051',
+]);
 
 /** Resolve the primary product route for a Screens base origin. */
 function appEntryUrl(base = PRIMARY_URL) {

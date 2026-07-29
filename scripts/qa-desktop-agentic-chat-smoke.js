@@ -55,8 +55,9 @@ async function staticChecks() {
     'P1'
   );
   record(
-    'app_entry_chat',
-    main.includes("const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/chat'") &&
+    'app_entry_computer_canonical',
+    main.includes("const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/computer'") &&
+      main.includes("'https://app.tarx.com'") &&
       main.includes('function appEntryUrl') &&
       main.includes("loadRouteWithRecovery(appEntryUrl(PRIMARY_URL), 'load_best_primary')"),
     null,
@@ -99,21 +100,31 @@ async function staticChecks() {
     tail: (nav.stdout || '').slice(-500),
   }, 'P0');
 
-  const chat = await probe('https://tarx.com/chat');
-  record('prod_chat_200', chat.ok && chat.status === 200, chat, 'P0');
-
-  const rootProbe = await probe('https://tarx.com/');
-  const loc = rootProbe.headers && (rootProbe.headers.location || rootProbe.headers.Location);
+  // Computer-canonical product host — do not require legacy tarx.com/chat (superseded thin-shell).
+  const computer = await probe('https://app.tarx.com/computer');
+  const computerOk = computer.ok && (computer.status === 200 || computer.status === 307 || computer.status === 308 || computer.status === 302);
   record(
-    'prod_root_still_home_or_chat',
-    rootProbe.ok && (loc === '/home' || loc === '/chat' || rootProbe.status === 200),
-    { status: rootProbe.status, location: loc || null },
+    'prod_computer_entry_reachable',
+    computerOk || computer.status === 401 || computer.status === 403,
+    {
+      ...computer,
+      note: '200/3xx preferred; auth walls still prove the route exists. 404 is a fail.',
+    },
+    'P0'
+  );
+  record(
+    'legacy_chat_not_required',
+    true,
+    { note: 'tarx.com/chat is not the Desktop contract; Computer entry is canonical' },
     'P1'
   );
 
-  // Screens agentic symbols — fetch chat HTML is shell only; assert via public API shape if available
-  const version = await probe('https://tarx.com/api/version');
-  record('prod_version_reachable', version.ok, version, 'P1');
+  const marketing = await probe('https://tarx.com/');
+  record('marketing_root_still_public', marketing.ok && marketing.status === 200, marketing, 'P1');
+
+  const version = await probe('https://app.tarx.com/api/version');
+  const versionAlt = version.ok ? version : await probe('https://tarx.com/api/version');
+  record('prod_version_reachable', versionAlt.ok, versionAlt, 'P1');
 
   const bridge = await probe('http://127.0.0.1:11440/health');
   record('local_bridge_optional', true, {

@@ -38,9 +38,11 @@ Expect: `accepted` / `source=Notarized Developer ID` and stapler validate OK whe
 
 ## What this app does
 
-- Loads TARX Screens at **`/chat`** (agentic product surface).
+- Loads the canonical **TARX Computer** product entry at **`https://app.tarx.com/computer`** (override with `TARX_DESKTOP_URL` / `TARX_DESKTOP_ENTRY`).
+- Falls back to local Computer ports **3050 / 3051** when the packaged local surface is preferred via fallback probing.
 - Bootstraps the local **Computer** Bridge when available.
-- Does **not** reimplement chat tools in the shell — chat + `TOOL_CALL` run in the loaded web product.
+- Does **not** reimplement chat tools in the shell — agent tools + `TOOL_CALL` run in the loaded product surface.
+- Does **not** treat marketing `tarx.com/chat` as the Desktop contract (thin-shell line is superseded).
 
 ## Develop
 
@@ -71,3 +73,10 @@ Proprietary — **UNLICENSED**. © TARXAN Inc. Source may be visible for transpa
 - Production voice
 - Windows/Linux Desktop public builds
 - Supercomputer enabled by default
+- Browser-side Grok spawn (Computer plane / Desktop Bridge only)
+
+## Related public proof
+
+- [TARX CLI](https://github.com/tarx-ai/tarx-cli) — `tarx route check local`, MCP host fixtures
+- [Governed Agent Contracts](https://github.com/tarx-ai/governed-agent-contracts)
+- [Palantir AIP × local-first](https://github.com/wantzjt/palantir-aip-local-first)
