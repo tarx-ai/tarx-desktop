@@ -17,8 +17,11 @@ function record(name, pass, detail = null, severity = 'P0') {
 
 record(
   'exact_app_origin_allowlist',
-  main.includes("const PRODUCTION_APP_ORIGINS = new Set(['https://tarx.com', 'https://www.tarx.com']);"),
-  'allowed production origins must be exact app origins'
+  main.includes("'https://app.tarx.com'") &&
+    main.includes("'https://tarx.com'") &&
+    main.includes("'https://www.tarx.com'") &&
+    main.includes('PRODUCTION_APP_ORIGINS = new Set'),
+  'allowed production origins must include app.tarx.com and exact app hosts'
 );
 record(
   'no_wildcard_tarx_subdomain_allow',
@@ -56,11 +59,12 @@ record(
   'magic-link auth callback must remain handled'
 );
 record(
-  'desktop_entry_is_agentic_chat',
-  main.includes("const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/chat'") &&
+  'desktop_entry_is_computer_canonical',
+  main.includes("const APP_ENTRY_PATH = process.env.TARX_DESKTOP_ENTRY || '/computer'") &&
+    main.includes("'https://app.tarx.com'") &&
     main.includes('function appEntryUrl') &&
-    main.includes('loadRouteWithRecovery(appEntryUrl(PRIMARY_URL), \'load_best_primary\')'),
-  'Desktop must boot into /chat (agentic contract), not root → /home'
+    main.includes("loadRouteWithRecovery(appEntryUrl(PRIMARY_URL), 'load_best_primary')"),
+  'Desktop must boot into /computer (Computer-canonical), not marketing root or legacy /home'
 );
 record(
   'no_legacy_home_entry_default',
@@ -70,9 +74,12 @@ record(
   'legacy /home must not be the Desktop fallback entry; root//home remapped to APP_ENTRY'
 );
 record(
-  'auth_callback_lands_on_chat',
-  main.includes('callbackUrl=${entryCallback}') || main.includes("callbackUrl=%2Fchat"),
-  'post-auth redirect must land on APP_ENTRY_PATH (/chat)'
+  'auth_callback_lands_on_entry',
+  main.includes('callbackUrl=${entryCallback}') ||
+    main.includes('encodeURIComponent(APP_ENTRY_PATH)') ||
+    main.includes('callbackUrl=%2Fcomputer') ||
+    main.includes('callbackUrl=%2Fchat'),
+  'post-auth redirect must land on APP_ENTRY_PATH (/computer)'
 );
 record(
   'update_feed_preserved',
