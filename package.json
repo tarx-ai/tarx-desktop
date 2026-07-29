@@ -1,6 +1,6 @@
 {
   "name": "tarx-desktop",
-  "version": "1.1.12",
+  "version": "1.1.13",
   "description": "TARX Desktop — Mac Beta local-first AI (TARXAN Inc)",
   "main": "electron/main.js",
   "scripts": {
